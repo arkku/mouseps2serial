@@ -1,0 +1,10 @@
+*.o
+*.hex
+*.bin
+*.elf
+*.a
+*~
+local.mk
+roms/*
+.ccls
+.tags
