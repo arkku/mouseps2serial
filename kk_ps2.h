@@ -19,7 +19,7 @@
 
 #define PS2_COMMAND_RESET           ((uint8_t) 0xFFU)
 #define PS2_COMMAND_RESEND          ((uint8_t) 0xFEU)
-#define PS2_COMMAND_ID              ((uint8_t) 0xF3U)
+#define PS2_COMMAND_ID              ((uint8_t) 0xF2U)
 #define PS2_COMMAND_STATUS          ((uint8_t) 0xE9U)
 #define PS2_COMMAND_SET_RATE        ((uint8_t) 0xF3U)
 #define PS2_COMMAND_SET_RESOLUTION  ((uint8_t) 0xE8U)
@@ -64,6 +64,14 @@ uint8_t ps2_command(const uint8_t command);
 /// return its reply. The reply is typically one of the `PS2_REPLY_*` values.
 /// The command will automatically be retried if requested.
 uint8_t ps2_command_arg(const uint8_t command, const uint8_t arg);
+
+/// Send the single-byte `command` to the PS/2 device.
+/// Returns `true` iff the reply is `PS2_REPLY_ACK`.
+bool ps2_command_ack(const uint8_t command);
+
+/// Send the byte `command` and its argument byte `arg` to the PS/2 device,
+/// Returns `true` iff the reply is `PS2_REPLY_ACK`.
+bool ps2_command_arg_ack(const uint8_t command, const uint8_t arg);
 
 /// Reads and returns a byte from the PS/2 device. This blocks until a byte
 /// is available to read (or until timed out).

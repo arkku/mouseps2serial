@@ -277,11 +277,17 @@ ps2_command (const uint8_t command) {
         reply = ps2_recv();
     } while (reply == PS2_REPLY_RESEND && retries_remaining);
 
-    if (reply != PS2_REPLY_ACK) {
-        ps2_set_error('A');
-    }
-
     return reply;
+}
+
+bool
+ps2_command_ack (const uint8_t command) {
+    if (ps2_command(command) == PS2_REPLY_ACK) {
+        return true;
+    } else {
+        ps2_error = 'C';
+        return false;
+    }
 }
 
 uint8_t
@@ -291,6 +297,16 @@ ps2_command_arg (const uint8_t command, const uint8_t arg) {
         return reply;
     }
     return ps2_command(arg);
+}
+
+bool
+ps2_command_arg_ack (const uint8_t command, const uint8_t arg) {
+    if (ps2_command_arg(command, arg) == PS2_REPLY_ACK) {
+        return true;
+    } else {
+        ps2_error = 'C';
+        return false;
+    }
 }
 
 /// The interrupt fires on the PS/2 CLK pulse.

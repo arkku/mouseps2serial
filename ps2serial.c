@@ -72,7 +72,9 @@
 /// If not defined, the default is to use the Microsoft serial mouse protocol.
 #define USE_MOUSE_SYSTEMS_PROTOCOL 1
 
-//#define USE_MOUSE_WHEEL 1
+#define USE_MOUSE_WHEEL 1
+
+#define USE_5_BUTTON_MODE 1
 
 static volatile uint8_t serial_enabled = 0;
 static volatile uint8_t serial_state_changed = 0;
@@ -84,8 +86,7 @@ serial_dtr_enable_interrupt (void) {
 }
 
 /// The interrupt fires when the serial port state changes.
-ISR (SERIAL_DTR_INT_VECTOR) {
-    serial_enabled = is_serial_powered();
+ISR (SERIAL_DTR_INT_VECTOR, ISR_NOBLOCK) {
     serial_state_changed = true;
 }
 
@@ -103,9 +104,9 @@ static volatile uint8_t mouse_has_reported = 0;
 
 static bool error_reported = false;
 
-#define is_lmb_pressed      ((mouse_buttons & 0x04) != 0)
-#define is_rmb_pressed      ((mouse_buttons & 0x01) != 0)
-#define is_mmb_pressed      ((mouse_buttons & 0x02) != 0)
+#define is_lmb_pressed      ((mouse_buttons & 0x01) != 0)
+#define is_rmb_pressed      ((mouse_buttons & 0x02) != 0)
+#define is_mmb_pressed      ((mouse_buttons & 0x04) != 0)
 
 #define capped_to_int8(x)   ((int8_t) (((x) > 127) ? 127 : (((x) < -127) ? -127 : (x))))
 
@@ -116,10 +117,14 @@ static bool error_reported = false;
 #define mouse_wheel         (mouse_id)
 #define ps2_mouse_packet_size ((uint8_t) (3U + (mouse_id == MOUSE_ID_PLAIN ? 0U : 1U)))
 
-#define is_mouse_ready()    (mouse_id != MOUSE_ID_NONE) 
+#define is_mouse_ready()    (mouse_id != MOUSE_ID_NONE)
 
 #ifndef MOUSE_HZ
 #define MOUSE_HZ 40
+#endif
+
+#ifndef MOUSE_SCALING
+#define MOUSE_SCALING 0
 #endif
 
 static inline void
@@ -138,26 +143,30 @@ mouse_reset_counters (void) {
 
 static inline
 int mouse_recv_byte (void) {
-    int attempts_remaining = 1000;
+    int attempts_remaining = 2000;
     while (!ps2_bytes_available() && ps2_is_ok() && attempts_remaining--) {
         wdt_reset();
-        _delay_us(1);
+        _delay_ms(1);
     }
     return ps2_bytes_available() ? ps2_get_byte() : EOF;
 }
 
 static bool
 mouse_input (void) {
-    while (ps2_bytes_available() < ps2_mouse_packet_size) {
+    while (ps2_bytes_available() >= ps2_mouse_packet_size) {
         const uint8_t flags = ps2_get_byte();
         int x = (int) ps2_get_byte();
         int y = (int) ps2_get_byte();
         uint8_t zb = (mouse_wheel ? ps2_get_byte() : 0U);
 
+        (void) fprintf_P(uart, PSTR("Packet: %02X %02X %02X %02X\r\n"), (unsigned) flags, (unsigned) x, (unsigned) y, (unsigned) zb);
+
         if (!(flags & MOUSE_ALWAYS_1_FLAG)) {
             // Invalid packet, ignore it
             continue;
         }
+
+        wdt_reset();
 
         mouse_has_reported = 1;
 
@@ -177,7 +186,7 @@ mouse_input (void) {
             if (mouse_wheel == MOUSE_ID_WHEEL5) {
                 buttons |= ((uint8_t) (zb & 0x30) >> 1);
                 zb &= 0x0FU;
-                if (zb & 0x40U) {
+                if (zb & 0x04U) {
                     // Extend the sign
                     zb |= 0xF0U;
                 }
@@ -194,6 +203,8 @@ mouse_input (void) {
         }
     }
 
+    wdt_reset();
+
     return mouse_has_moved();
 }
 
@@ -203,6 +214,7 @@ mouse_send_to_serial (void) {
     int dy = delta_y;
     int dz = delta_z;
 
+    wdt_reset();
     mouse_reset_counters();
 
     if (!is_serial_powered() && 0) { // TODO: Make conditional
@@ -236,46 +248,65 @@ mouse_send_to_serial (void) {
 }
 
 static bool
+read_mouse_id (void) {
+    int_fast8_t attempts_remaining = 3;
+
+    do {
+        int byte = mouse_recv_byte();
+
+        switch (byte) {
+        case MOUSE_ID_PLAIN:
+        case MOUSE_ID_WHEEL:
+        case MOUSE_ID_WHEEL5:
+            mouse_id = byte;
+            return true;
+        case EOF:
+            break;
+        default:
+            (void) fprintf_P(uart, PSTR("Invalid: %02X\r\n"), (unsigned) byte);
+            ps2_request_resend();
+            break;
+        }
+    } while (attempts_remaining--);
+
+    return false;
+}
+
+static bool
 mouse_init (const bool do_reset) {
     wdt_reset();
 
-    uint8_t byte;
+    int byte;
 
     if (do_reset) {
         uart_putc('R');
 
-        byte = ps2_command(PS2_COMMAND_RESET);
+        ps2_send_byte(PS2_COMMAND_RESET);
+
+        int_fast8_t attempts_remaining = 3;
+        do {
+            byte = mouse_recv_byte();
+        } while (byte == EOF && attempts_remaining--);
 
         if (byte != PS2_REPLY_ACK) {
-            (void) fprintf_P(uart, PSTR("Reset failed: %02X\r\n"), (unsigned) byte);
+            (void) fprintf_P(uart, PSTR("eset failed: %02X\r\n"), (unsigned) byte);
             return false;
         }
+
         mouse_id = MOUSE_ID_NONE;
 
         byte = mouse_recv_byte();
-        (void) fprintf_P(uart, PSTR("Reset: %02X\r\n"), (unsigned) byte);
+        (void) fprintf_P(uart, PSTR("eset: %02X\r\n"), (unsigned) byte);
 
         if (byte != PS2_REPLY_TEST_PASSED) {
             return false;
         }
     }
 
-    wdt_reset();
-    byte = mouse_recv_byte();
-
-    switch (byte) {
-    case MOUSE_ID_PLAIN:
-    case MOUSE_ID_WHEEL:
-    case MOUSE_ID_WHEEL5:
-        break;
-    default:
-        (void) fprintf_P(uart, PSTR("Invalid: %02X\r\n"), (unsigned) byte);
-        ps2_request_resend();
-        byte = ps2_is_ok() ? mouse_recv_byte() : MOUSE_ID_NONE;
-        break;
+    if (!read_mouse_id()) {
+        (void) fprintf_P(uart, PSTR("No mouse id\r\n"));
+        return false;
     }
-
-    mouse_id = byte;
 
     (void) fprintf_P(uart, PSTR("id: %02X\r\n"), mouse_id);
 
@@ -283,35 +314,47 @@ mouse_init (const bool do_reset) {
     mouse_buttons = 0;
 
 #ifdef USE_MOUSE_WHEEL
-    if (mouse_id == 0) {
+    if (mouse_id == MOUSE_ID_PLAIN) {
         // Magic sequence to enable the mouse wheel (if present)
-        (void) ps2_command_arg(PS2_COMMAND_SET_RESOLUTION, 200);
-        (void) ps2_command_arg(PS2_COMMAND_SET_RESOLUTION, 100);
-        (void) ps2_command_arg(PS2_COMMAND_SET_RESOLUTION, 80);
-        (void) ps2_command(PS2_COMMAND_ID);
 
-        mouse_id = mouse_recv_byte();
-
-        (void) fprintf_P(uart, PSTR("id: %02X\r\n"), mouse_id);
+        if (ps2_command_arg_ack(PS2_COMMAND_SET_RATE, 200)
+            && ps2_command_arg_ack(PS2_COMMAND_SET_RATE, 100)
+            && ps2_command_arg_ack(PS2_COMMAND_SET_RATE, 80)
+            && ps2_command_ack(PS2_COMMAND_ID)) {
+            if (read_mouse_id()) {
+                (void) fprintf_P(uart, PSTR("id: %02X\r\n"), mouse_id);
+            }
+        } else {
+            (void) fprintf_P(uart, PSTR("no wheel\r\n"));
+        }
+    }
 
 #ifdef USE_5_BUTTON_MODE
-        if (mouse_id == 3) {
-            (void) ps2_command_arg(PS2_COMMAND_SET_RESOLUTION, 200);
-            (void) ps2_command_arg(PS2_COMMAND_SET_RESOLUTION, 200);
-            (void) ps2_command_arg(PS2_COMMAND_SET_RESOLUTION, 80);
-            (void) ps2_command(PS2_COMMAND_ID);
+    if (mouse_id == MOUSE_ID_WHEEL) {
+        // Magic sequence to enable the 5-button mode
 
-            mouse_id = mouse_recv_byte();
-
-            (void) fprintf_P(uart, PSTR("id: %02X\r\n"), mouse_id);
+        if (ps2_command_arg_ack(PS2_COMMAND_SET_RATE, 200)
+            && ps2_command_arg_ack(PS2_COMMAND_SET_RATE, 200)
+            && ps2_command_arg_ack(PS2_COMMAND_SET_RATE, 80)
+            && ps2_command_ack(PS2_COMMAND_ID)) {
+            if (read_mouse_id()) {
+                (void) fprintf_P(uart, PSTR("id: %02X\r\n"), mouse_id);
+            }
+        } else {
+            (void) fprintf_P(uart, PSTR("not 5-button\r\n"));
         }
-#endif
     }
-#endif
+#endif // USE_5_BUTTON_MODE
+
+#endif // USE_MOUSE_WHEEL
 
 
     wdt_reset();
+#if defined(MOUSE_SCALING) && MOUSE_SCALING == 1
+    byte = ps2_command(PS2_COMMAND_ENABLE_SCALING);
+#else
     byte = ps2_command(PS2_COMMAND_DISABLE_SCALING);
+#endif
     (void) fprintf_P(uart, PSTR("scaling: %02X\r\n"), byte);
 
     wdt_reset();
@@ -345,10 +388,13 @@ setup (void) {
     wdt_enable(WDTO_4S);
 
     led_set_output();
-    led_set(0);
+    led_set(1);
 
     // Disable interrupts during setup
     cli();
+
+    // Set up the PS/2 port
+    ps2_enable();
 
 #ifdef USE_MOUSE_SYSTEMS_PROTOCOL
     uart_init(BAUD, UART_MODE_8N1);
@@ -360,70 +406,38 @@ setup (void) {
     serial_dtr_set_input();
 
     // Trigger an interrupt on serial port power state change
-    //serial_dtr_int_on_change();
-    //serial_dtr_enable_interrupt();
+    serial_dtr_int_on_change();
+    serial_dtr_enable_interrupt();
 
     // Set the initial state of the serial port (in case already powered)
     const bool serial_state = is_serial_powered();
     serial_enabled = serial_state;
-    serial_state_changed = serial_state;
+    serial_state_changed = true;
 
     // Enable interrupts
     sei();
 
-    // Set up the PS/2 port
-    ps2_enable();
-
-    uart_putc('!');
+    _delay_ms(100);
 
     int byte;
-    for (;;) {
-        wdt_reset();
+    int_fast8_t attempts_remaining = 5;
+    do {
+        byte = mouse_recv_byte();
+    } while (byte == EOF && attempts_remaining--);
 
-        if (ps2_is_ok()) {
-            led_set(1);
-            byte = mouse_recv_byte();
-            if (byte != EOF) {
-                (void) fprintf_P(uart, PSTR(" %02X"), (unsigned) byte);
-            }
-            _delay_ms(1);
-
-            if (byte == PS2_REPLY_TEST_PASSED && mouse_id == MOUSE_ID_NONE) {
-                byte = mouse_recv_byte();
-                if (byte == 0) {
-                    mouse_id = MOUSE_ID_PLAIN;
-                }
-                (void) fprintf_P(uart, PSTR(" %02X Reset\r\n"), (unsigned) byte);
-                ps2_send_byte(PS2_COMMAND_RESET);
-                _delay_ms(2);
-                byte = mouse_recv_byte();
-                (void) fprintf_P(uart, PSTR(" %02X Enable\r\n"), (unsigned) byte);
-                ps2_send_byte(PS2_COMMAND_ENABLE);
-            }
-        } else {
-            byte = ps2_last_error();
-            if (!byte) {
-                byte = '?';
-            }
-            uart_putc(' ');
-            uart_putc(byte);
-            led_set(0);
-            _delay_ms(100);
-            ps2_enable();
-
-        }
-    }
-
-    /*
     if (byte == PS2_REPLY_TEST_PASSED) {
-        uart_putc('.');
+        (void) fprintf_P(uart, PSTR("POWER: %02X\r\n"), (unsigned) byte);
+
+        _delay_ms(100);
+
         if (mouse_init(false)) {
+            (void) fprintf_P(uart, PSTR("INIT OK: %02X\r\n"), (unsigned) mouse_id);
             return;
         }
     }
 
-    int_fast8_t retries_remaining = 10;
-    while (!mouse_init(true) && retries_remaining--) {
+    attempts_remaining = 10;
+    while (!mouse_init(true) && attempts_remaining--) {
         if (!ps2_is_ok()) {
             byte = ps2_last_error();
             if (!byte) {
@@ -431,11 +445,10 @@ setup (void) {
             }
             uart_putc(byte);
             wdt_reset();
-            _delay_ms(100);
             ps2_enable();
         }
+        _delay_ms(100);
     }
-    */
 }
 
 int
@@ -443,8 +456,16 @@ main (void) {
     setup();
 
     for (;;) {
+        if (serial_state_changed) {
+            serial_state_changed = false;
+            serial_enabled = is_serial_powered();
+            (void) fprintf_P(uart, PSTR("Serial: %u\r\n"), serial_enabled ? 1 : 0);
+        }
+
         if (uart_bytes_available()) {
             const int input = uart_getc();
+
+            wdt_reset();
 
             switch (input) {
             case '?':
@@ -475,25 +496,33 @@ main (void) {
             }
         }
 
-        led_set(false);
-
         if (!ps2_is_ok()) {
             if (!error_reported && !uart_bytes_available()) {
-                uart_putc('E');
+                uint8_t byte = ps2_last_error();
+                (void) fprintf_P(uart, PSTR("Error: %02X '%c'\r\n"), (unsigned) byte, byte);
                 error_reported = true;
             }
             continue;
         }
 
-        if (!is_mouse_ready() && is_serial_powered()) {
-            ps2_enable();
+        if (!is_mouse_ready() && serial_enabled) {
+            if (!ps2_is_ok()) {
+                ps2_enable();
+            }
+            (void) fprintf_P(uart, PSTR("REINIT"));
             (void) mouse_init(true);
         }
 
-        while (mouse_input()) {
-            led_set(true);
-            wdt_reset();
-            mouse_send_to_serial();
+        if (is_mouse_ready()) {
+            while (mouse_input()) {
+                mouse_send_to_serial();
+            }
+        } else {
+            while (ps2_bytes_available()) {
+                wdt_reset();
+                uint8_t byte = ps2_get_byte();
+                (void) fprintf_P(uart, PSTR("%02X "), (unsigned) byte);
+            }
         }
     }
 }
