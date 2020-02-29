@@ -1,7 +1,8 @@
 /**
  * kk_uart.h: A UART (serial port) library for AVR microcontrollers.
  * Provides an stdio-compatible `FILE *` handle to the UART, with
- * interrupt-driven and buffered receiving (but unbuffered transmitting).
+ * interrupt-driven and buffered receiving. Transmitting may be made
+ * unbuffered by setting `KK_UART_TRANSMIT_BUFFER_SIZE` to zero.
  *
  * Copyright (c) 2020 Kimmo Kulovesi, https://arkku.dev/
  * Provided with absolutely no warranty, use at your own risk only.
@@ -23,6 +24,10 @@ extern "C" {
 
 #ifndef KK_UART_RECEIVE_BUFFER_SIZE
 #define KK_UART_RECEIVE_BUFFER_SIZE 128
+#endif
+
+#ifndef KK_UART_TRANSMIT_BUFFER_SIZE
+#define KK_UART_TRANSMIT_BUFFER_SIZE 128
 #endif
 
 #ifndef KK_UART_CONVERT_LF_OUT_TO_CRLF

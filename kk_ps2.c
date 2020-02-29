@@ -291,7 +291,7 @@ ps2_command_arg (const uint8_t command, const uint8_t arg) {
 }
 
 /// The interrupt fires on the PS/2 CLK pulse.
-ISR (PS2_CLK_INT_VECTOR, ISR_NOBLOCK) {
+ISR (PS2_CLK_INT_VECTOR) {
     // Read the incoming bit from the data line at msb
     uint8_t bit = ps2_data_bit7();
     uint8_t state = ps2_state;

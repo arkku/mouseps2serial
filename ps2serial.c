@@ -376,31 +376,47 @@ setup (void) {
 
     uart_putc('!');
 
-    uint8_t byte = mouse_recv_byte();
-
-    for (;;) {
-        wdt_reset();
-
-        if (ps2_is_ok()) {
-            led_set(1);
-            byte = mouse_recv_byte();
-            if (byte != 0xFFU) {
-                (void) fprintf_P(uart, PSTR("%02X"), (unsigned) byte);
-            }
-            _delay_ms(1);
-        } else {
-            byte = ps2_last_error();
-            if (!byte) {
-                byte = '?';
-            }
-            uart_putc(byte);
-            led_set(0);
-            _delay_ms(100);
-            ps2_enable();
-            ps2_send_byte(PS2_COMMAND_RESET);
+    uint8_t byte;
+    byte = ps2_command(PS2_COMMAND_RESET);
+    (void) fprintf_P(uart, PSTR("Reset: %02X\r\n"), (unsigned) byte);
+    if (byte == PS2_REPLY_ACK) {
+        byte = mouse_recv_byte();
+        (void) fprintf_P(uart, PSTR("Next: %02X\r\n"), (unsigned) byte);
+        if (byte == PS2_REPLY_TEST_PASSED) {
+            (void) mouse_init(false);
         }
     }
 
+    if (!ps2_is_ok() || mouse_id == MOUSE_ID_NONE) {
+        for (;;) {
+            wdt_reset();
+
+            if (ps2_is_ok()) {
+                led_set(1);
+                byte = mouse_recv_byte();
+                if (byte != 0xFFU) {
+                    (void) fprintf_P(uart, PSTR(" %02X"), (unsigned) byte);
+                }
+                _delay_ms(1);
+            } else {
+                byte = ps2_last_error();
+                if (!byte) {
+                    byte = '?';
+                }
+                uart_putc(' ');
+                uart_putc(byte);
+                led_set(0);
+                _delay_ms(100);
+                ps2_enable();
+                /*(void) fprintf_P(uart, PSTR(" RESET "));
+                ps2_send_byte(PS2_COMMAND_RESET);
+                (void) fprintf_P(uart, PSTR(" ENABLE "));
+                ps2_send_byte(PS2_COMMAND_ENABLE);*/
+            }
+        }
+    }
+
+    /*
     if (byte == PS2_REPLY_TEST_PASSED) {
         uart_putc('.');
         if (mouse_init(false)) {
@@ -421,6 +437,7 @@ setup (void) {
             ps2_enable();
         }
     }
+    */
 }
 
 int

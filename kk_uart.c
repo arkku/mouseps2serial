@@ -26,13 +26,13 @@ typedef uint8_t buffer_index_t;
 static volatile buffer_index_t rx_buffer_write = 0;
 static volatile buffer_index_t rx_buffer_read = 0;
 
-#define buffer_size ((unsigned int) (sizeof rx_buffer))
+#define rx_buffer_size ((unsigned int) (sizeof rx_buffer))
 
 #define uart_has_data           ((UCSR0A & _BV(RXC0)) != 0)
 #define uart_byte               UDR0
 #define uart_wait_to_read()     loop_until_bit_is_set(UCSR0A, RXC0)
-#define uart_wait_to_write()    loop_until_bit_is_set(UCSR0A, UDRE0);
-#define uart_send(chr)          do { uart_wait_to_write(); uart_byte = (chr); } while (0)
+#define uart_can_write()        bit_is_set(UCSR0A, UDRE0)
+#define uart_wait_to_write()    loop_until_bit_is_set(UCSR0A, UDRE0)
 
 #define UART_RX_PIN             ((uint8_t) 1U)
 #define UART_TX_PIN             ((uint8_t) 2U)
@@ -40,11 +40,30 @@ static volatile buffer_index_t rx_buffer_read = 0;
 #define UART_PORT               PORTD
 
 #if KK_UART_RECEIVE_BUFFER_SIZE == 256
-#define modulo_buffer_size(x)   ((uint8_t) (x))
+#define modulo_rx_buffer_size(x)   ((uint8_t) (x))
 #elif KK_UART_RECEIVE_BUFFER_SIZE > 256
 #error KK_UART_RECEIVE_BUFFER_SIZE too large (max. 256)!
 #else
-#define modulo_buffer_size(x)   ((buffer_index_t) ((x) % buffer_size))
+#define modulo_rx_buffer_size(x)   ((buffer_index_t) ((x) % rx_buffer_size))
+#endif
+
+#if KK_UART_TRANSMIT_BUFFER_SIZE > 0
+
+static char tx_buffer[KK_UART_TRANSMIT_BUFFER_SIZE];
+
+static volatile buffer_index_t tx_buffer_write = 0;
+static volatile buffer_index_t tx_buffer_read = 0;
+
+#define tx_buffer_size ((unsigned int) (sizeof tx_buffer))
+
+#if KK_UART_TRANSMIT_BUFFER_SIZE == 256
+#define modulo_tx_buffer_size(x)   ((uint8_t) (x))
+#elif KK_UART_TRANSMIT_BUFFER_SIZE > 256
+#error KK_UART_TRANSMIT_BUFFER_SIZE too large (max. 256)!
+#else
+#define modulo_tx_buffer_size(x)   ((buffer_index_t) ((x) % tx_buffer_size))
+#endif
+
 #endif
 
 #if KK_UART_CONVERT_CRLF_IN_TO_LF != 0
@@ -73,7 +92,7 @@ consume_newline (void) {
 
 uint8_t
 uart_bytes_available (void) {
-    uint8_t unread_count = modulo_buffer_size(buffer_size + rx_buffer_write - rx_buffer_read);
+    uint8_t unread_count = modulo_rx_buffer_size(rx_buffer_size + rx_buffer_write - rx_buffer_read);
 #if KK_UART_CONVERT_CRLF_IN_TO_LF != 0
     if (unread_count && previous_was_converted_cr) {
         unread_count -= (rx_buffer[rx_buffer_read] == '\n') ? 1 : 0;
@@ -91,6 +110,55 @@ uart_flush_unread (void) {
 #endif
 }
 
+#if KK_UART_TRANSMIT_BUFFER_SIZE > 0
+#define uart_has_unsent_bytes() (tx_buffer_read != tx_buffer_write)
+
+uint8_t
+uart_bytes_unsent (void) {
+    return modulo_tx_buffer_size(tx_buffer_size + tx_buffer_write - tx_buffer_read);
+}
+
+static void
+uart_send (const char chr) {
+    buffer_index_t next_pos;
+    do {
+        if (!uart_has_unsent_bytes() && uart_can_write()) {
+            // Write immediately when we can
+            uart_byte = chr;
+            return;
+        }
+
+        next_pos = modulo_tx_buffer_size(tx_buffer_write + 1);
+    } while (next_pos == tx_buffer_read);
+
+    tx_buffer[tx_buffer_write] = chr;
+    tx_buffer_write = next_pos;
+    UCSR0B |= _BV(UDRIE0); // Enable interrupt to process tx buffer
+}
+
+#ifdef USART_UDRE_vect
+ISR(USART_UDRE_vect)
+#else
+ISR(USART0_UDRE_vect)
+#endif
+{
+    const buffer_index_t pos = tx_buffer_read;
+
+    if (pos != tx_buffer_write) {
+        uart_byte = tx_buffer[pos];
+        tx_buffer_read = modulo_tx_buffer_size(pos + 1);
+    }
+
+    if (tx_buffer_read == tx_buffer_write) {
+        // No more queued bytes, disable interrupt
+        UCSR0B &= ~_BV(UDRIE0);
+    }
+}
+
+#else
+#define uart_send(chr)          do { uart_wait_to_write(); uart_byte = (chr); } while (0)
+#endif
+
 int
 uart_getc (void) {
     char c;
@@ -103,7 +171,7 @@ get_next_from_buffer:
         return EOF;
     }
     c = rx_buffer[pos];
-    rx_buffer_read = modulo_buffer_size(pos + 1);
+    rx_buffer_read = modulo_rx_buffer_size(pos + 1);
 
 #if KK_UART_CONVERT_CRLF_IN_TO_LF != 0
     if (previous_was_converted_cr) {
@@ -140,7 +208,7 @@ uart_peekc (void) {
     char c = rx_buffer[pos];
     if (previous_was_converted_cr) {
         if (c == '\n') {
-            pos = modulo_buffer_size(pos + 1);
+            pos = modulo_rx_buffer_size(pos + 1);
             if (pos == rx_buffer_write) {
                 return EOF;
             }
@@ -416,7 +484,7 @@ ISR(USART0_RX_vect)
     if (status & (_BV(FE0) | _BV(UPE0))) {
         uart_last_rx_error = status;
     } else {
-        const buffer_index_t next_pos = modulo_buffer_size(rx_buffer_write + 1);
+        const buffer_index_t next_pos = modulo_rx_buffer_size(rx_buffer_write + 1);
         if (next_pos != rx_buffer_read) {
             rx_buffer[rx_buffer_write] = c;
             rx_buffer_write = next_pos;
