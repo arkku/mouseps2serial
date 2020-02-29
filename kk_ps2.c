@@ -59,8 +59,8 @@
         } \
     } while (0)
 
-#define ps2_clk_set(state)      ps2_set_pin_state(PS2_CLK_PIN, (state))
-#define ps2_data_set(state)     ps2_set_pin_state(PS2_DATA_PIN, (state))
+#define ps2_clk_set(state)          ps2_set_pin_state(PS2_CLK_PIN, (state))
+#define ps2_data_set(state)         ps2_set_pin_state(PS2_DATA_PIN, (state))
 
 #define ps2_clk_int_clear_flag()    do { EIFR = _BV(PS2_CLK_INT); } while (0)
 #define ps2_clk_int_enable()        do { EIMSK |= _BV(PS2_CLK_INT); } while (0)
@@ -84,6 +84,7 @@ enum {
     PS2_STATE_READ_DATA,
     PS2_STATE_READ_PARITY,
     PS2_STATE_READ_STOP,
+    PS2_STATE_WRITE_BEGIN,
     PS2_STATE_WRITE_DATA,
     PS2_STATE_WRITE_PARITY,
     PS2_STATE_WRITE_STOP,
@@ -150,7 +151,7 @@ ps2_clk_release (void) {
 static inline void
 ps2_data_release (void) {
     ps2_data_set_input();
-    ps2_clk_set(INTERNAL_PULL_UP);
+    ps2_data_set(INTERNAL_PULL_UP);
 }
 
 static inline void
@@ -194,9 +195,6 @@ ps2_write (const uint8_t data, const bool flush_input) {
     // Wait for any current operation to finish
     while (ps2_is_active());
 
-    // Pull down CLK to request write access
-    ps2_clk_set_low();
-
     ps2_disable_interrupt();
 
     if (!ps2_is_ok()) {
@@ -204,20 +202,25 @@ ps2_write (const uint8_t data, const bool flush_input) {
     }
 
     ps2_data_release();
+    ps2_clk_release();
+    _delay_us(10);
 
-    ps2_data_byte = data;
-    ps2_parity = 0;
+    // Pull down CLK to request write access
+    ps2_clk_set_low();
 
-    if (flush_input) {
-        ps2_flush_input();
-    }
-
-    _delay_us(100);
+    _delay_us(128);
 
     ps2_data_out(0);
 
     ps2_error = 0;
-    ps2_state = PS2_STATE_WRITE_DATA;
+    ps2_state = PS2_STATE_WRITE_BEGIN;
+    ps2_data_byte = data;
+    ps2_parity = 0;
+    ps2_bits_left = 8;
+
+    if (flush_input) {
+        ps2_flush_input();
+    }
 
     ps2_clk_int_on_falling();
     ps2_enable_interrupt();
@@ -357,6 +360,10 @@ ISR (PS2_CLK_INT_VECTOR) {
             ps2_set_error('s');
         }
         break;
+
+    case PS2_STATE_WRITE_BEGIN:
+        ps2_state = state;
+        // fallthrough
 
     case PS2_STATE_WRITE_DATA:
         bit = ps2_data_byte & 1;

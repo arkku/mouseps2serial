@@ -137,13 +137,13 @@ mouse_reset_counters (void) {
 #define MOUSE_Y_SIGN_FLAG       ((uint8_t) (1U << 5))
 
 static inline
-uint8_t mouse_recv_byte (void) {
+int mouse_recv_byte (void) {
     int attempts_remaining = 1000;
     while (!ps2_bytes_available() && ps2_is_ok() && attempts_remaining--) {
         wdt_reset();
         _delay_us(1);
     }
-    return ps2_get_byte();
+    return ps2_bytes_available() ? ps2_get_byte() : EOF;
 }
 
 static bool
@@ -376,43 +376,41 @@ setup (void) {
 
     uart_putc('!');
 
-    uint8_t byte;
-    byte = ps2_command(PS2_COMMAND_RESET);
-    (void) fprintf_P(uart, PSTR("Reset: %02X\r\n"), (unsigned) byte);
-    if (byte == PS2_REPLY_ACK) {
-        byte = mouse_recv_byte();
-        (void) fprintf_P(uart, PSTR("Next: %02X\r\n"), (unsigned) byte);
-        if (byte == PS2_REPLY_TEST_PASSED) {
-            (void) mouse_init(false);
-        }
-    }
+    int byte;
+    for (;;) {
+        wdt_reset();
 
-    if (!ps2_is_ok() || mouse_id == MOUSE_ID_NONE) {
-        for (;;) {
-            wdt_reset();
-
-            if (ps2_is_ok()) {
-                led_set(1);
-                byte = mouse_recv_byte();
-                if (byte != 0xFFU) {
-                    (void) fprintf_P(uart, PSTR(" %02X"), (unsigned) byte);
-                }
-                _delay_ms(1);
-            } else {
-                byte = ps2_last_error();
-                if (!byte) {
-                    byte = '?';
-                }
-                uart_putc(' ');
-                uart_putc(byte);
-                led_set(0);
-                _delay_ms(100);
-                ps2_enable();
-                /*(void) fprintf_P(uart, PSTR(" RESET "));
-                ps2_send_byte(PS2_COMMAND_RESET);
-                (void) fprintf_P(uart, PSTR(" ENABLE "));
-                ps2_send_byte(PS2_COMMAND_ENABLE);*/
+        if (ps2_is_ok()) {
+            led_set(1);
+            byte = mouse_recv_byte();
+            if (byte != EOF) {
+                (void) fprintf_P(uart, PSTR(" %02X"), (unsigned) byte);
             }
+            _delay_ms(1);
+
+            if (byte == PS2_REPLY_TEST_PASSED && mouse_id == MOUSE_ID_NONE) {
+                byte = mouse_recv_byte();
+                if (byte == 0) {
+                    mouse_id = MOUSE_ID_PLAIN;
+                }
+                (void) fprintf_P(uart, PSTR(" %02X Reset\r\n"), (unsigned) byte);
+                ps2_send_byte(PS2_COMMAND_RESET);
+                _delay_ms(2);
+                byte = mouse_recv_byte();
+                (void) fprintf_P(uart, PSTR(" %02X Enable\r\n"), (unsigned) byte);
+                ps2_send_byte(PS2_COMMAND_ENABLE);
+            }
+        } else {
+            byte = ps2_last_error();
+            if (!byte) {
+                byte = '?';
+            }
+            uart_putc(' ');
+            uart_putc(byte);
+            led_set(0);
+            _delay_ms(100);
+            ps2_enable();
+
         }
     }
 
