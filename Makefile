@@ -8,6 +8,8 @@
 
 MCU ?= atmega328p
 F_CPU ?= 16000000UL
+
+# Bootloader rate only, the device itself is configured by DIP switches
 BAUD ?= 9600UL
 
 LFUSE ?= BF
@@ -20,7 +22,7 @@ EFUSE ?= FD
 #	make burn BURNER=avrisp2 PORT=/dev/ttyUSB0 BPS=115200
 
 # Burner device
-BURNER ?= dragon_pp
+BURNER ?= dragon_isp
 # Burner port
 #PORT ?= /dev/ttyUSB0
 # Burner speed
@@ -44,7 +46,7 @@ BOOTLOADER=optiboot_atmega328.hex
 
 all: $(HEX)
 
-ps2serial.o: kk_uart.h kk_ps2.h led.h
+ps2serial.o: kk_uart.h kk_ps2.h led.h dip.h dtr.h
 kk_uart.o: kk_uart.h
 kk_ps2.o: kk_ps2.h
 $(OBJS): Makefile

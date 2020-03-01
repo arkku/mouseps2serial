@@ -1,5 +1,5 @@
 /**
- * kk_ps2.c: An asynchronous PS/2 host library for AVR (mainly ATmega328p)
+ * kk_ps2.c: A PS/2 host library for AVR
  *
  * The PS/2 CLK pin must be connected to a hardware interrupt pin. The
  * default is PD2/INT0.
@@ -11,13 +11,13 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
 
 #include "kk_ps2.h"
-#include "led.h"
 
 #define PASTE_(a, b)            a##b
 #define PASTE(a, b)             PASTE_(a, b)
@@ -190,20 +190,20 @@ ps2_is_ok (void) {
     return ps2_state != PS2_STATE_ERROR;
 }
 
-static void
+static bool
 ps2_write (const uint8_t data, const bool flush_input) {
-    // Wait for any current operation to finish
-    while (ps2_is_active());
+    unsigned attempts_remaining = 12000U;
+    while (ps2_is_active() && attempts_remaining--) {
+        _delay_us(4);
+    }
 
     ps2_disable_interrupt();
 
-    if (!ps2_is_ok()) {
-        return;
+    if (!ps2_is_ok() || ps2_is_active()) {
+        return false;
     }
 
     ps2_data_release();
-    ps2_clk_release();
-    _delay_us(10);
 
     // Pull down CLK to request write access
     ps2_clk_set_low();
@@ -227,6 +227,20 @@ ps2_write (const uint8_t data, const bool flush_input) {
 
     // Release the CLK to begin writing
     ps2_clk_release();
+
+    // Wait for the write to begin (note that we use a longer timeout
+    // here since the very first write on power-up may take a while)
+    attempts_remaining = 62500U;
+    while (ps2_state == PS2_STATE_WRITE_BEGIN && attempts_remaining--) {
+        _delay_us(8);
+    }
+
+    if (ps2_state != PS2_STATE_WRITE_BEGIN) {
+        return true;
+    } else {
+        ps2_set_error(PS2_ERROR_WRITE_BEGIN);
+        return false;
+    }
 }
 
 uint8_t
@@ -234,13 +248,13 @@ ps2_bytes_available (void) {
     return modulo_buffer_size(buffer_size + ps2_buffer_tail - ps2_buffer_head);
 }
 
-uint8_t
+int
 ps2_get_byte (void) {
     uint8_t data;
     uint8_t pos = ps2_buffer_head;
 
     if (pos == ps2_buffer_tail) {
-        return 0xFFU;
+        return EOF;
     }
 
     data = ps2_buffer[pos];
@@ -249,32 +263,53 @@ ps2_get_byte (void) {
     return data;
 }
 
-uint8_t
+int
 ps2_recv (void) {
     while (ps2_is_ok() && !ps2_bytes_available());
+    return ps2_get_byte();
+}
+
+int
+ps2_recv_timeout (const uint8_t milliseconds) {
+    if (ps2_bytes_available()) {
+        return ps2_get_byte();
+    }
+
+    if (milliseconds == 0U) {
+        return ps2_recv();
+    }
+
+    unsigned attempts_remaining = 100U * (unsigned) milliseconds;
+    while (ps2_is_ok() && !ps2_bytes_available() && attempts_remaining--) {
+        _delay_us(10);
+    }
 
     return ps2_get_byte();
 }
 
 bool
 ps2_send (const uint8_t data, const bool flush_input) {
-    ps2_write(data, flush_input);
+    if (ps2_write(data, flush_input)) {
+        while (ps2_is_active());
 
-    while (ps2_is_active());
-
-    return ps2_is_ok();
+        return ps2_is_ok();
+    } else {
+        return false;
+    }
 }
 
-uint8_t
+uint8_t ps2_reply_timeout_ms = 100U;
+
+int
 ps2_command (const uint8_t command) {
     int_fast8_t retries_remaining = 2;
-    uint8_t reply = 0xFFU;
+    int reply = EOF;
 
     do {
         if (!ps2_send(command, true)) {
             return reply;
         }
-        reply = ps2_recv();
+        reply = ps2_recv_timeout(ps2_reply_timeout_ms);
     } while (reply == PS2_REPLY_RESEND && retries_remaining);
 
     return reply;
@@ -290,9 +325,9 @@ ps2_command_ack (const uint8_t command) {
     }
 }
 
-uint8_t
+int
 ps2_command_arg (const uint8_t command, const uint8_t arg) {
-    const uint8_t reply = ps2_command(command);
+    const int reply = ps2_command(command);
     if (reply != PS2_REPLY_ACK) {
         return reply;
     }
@@ -315,21 +350,17 @@ ISR (PS2_CLK_INT_VECTOR) {
     uint8_t bit = ps2_data_bit7();
     uint8_t state = ps2_state;
 
-    led_toggle();
-
-    if (state == PS2_STATE_END) {
-        ps2_clk_int_on_falling();
-        ps2_state = PS2_STATE_IDLE;
-        return;
-    }
-
     switch (state++) {
     case PS2_STATE_ERROR:
         return;
 
     case PS2_STATE_END:
+        if (bit || ps2_clk_state()) {
+            ps2_clk_int_on_falling();
+            ps2_state = PS2_STATE_IDLE;
+            return;
+        }
         // fallthrough
-
     case PS2_STATE_IDLE:
         if (bit == 0) {
             ps2_state = state;
@@ -337,7 +368,7 @@ ISR (PS2_CLK_INT_VECTOR) {
             ps2_parity = 0;
             ps2_bits_left = 8;
         } else {
-            ps2_set_error('i');
+            ps2_set_error(PS2_ERROR_START_BIT);
         }
         break;
 
@@ -358,22 +389,22 @@ ISR (PS2_CLK_INT_VECTOR) {
         if (ps2_parity) {
             ps2_state = state;
         } else {
-            ps2_set_error('p');
+            ps2_set_error(PS2_ERROR_PARITY);
         }
         break;
 
     case PS2_STATE_READ_STOP:
-        if (bit) {
-            ps2_state = PS2_STATE_END;
-            ps2_clk_int_on_change();
+        ps2_state = PS2_STATE_END;
+        ps2_clk_int_on_change();
 
+        if (bit) {
             const uint8_t next_pos = modulo_buffer_size(ps2_buffer_tail + 1);
             if (next_pos != ps2_buffer_head) {
                 ps2_buffer[ps2_buffer_tail] = ps2_data_byte;
                 ps2_buffer_tail = next_pos;
             }
         } else {
-            ps2_set_error('s');
+            ps2_set_error(PS2_ERROR_STOP_BIT);
         }
         break;
 
@@ -408,7 +439,7 @@ ISR (PS2_CLK_INT_VECTOR) {
             ps2_state = PS2_STATE_END;
             ps2_clk_int_on_change();
         } else {
-            ps2_set_error('w');
+            ps2_set_error(PS2_ERROR_WRITE_END);
         }
         break;
     }
@@ -422,9 +453,9 @@ ps2_flush_input (void) {
 
 void
 ps2_enable (void) {
-    int attempts_remaining = 2000;
+    int attempts_remaining = 12000;
     while (ps2_is_active() && attempts_remaining--) {
-        _delay_us(1);
+        _delay_us(4);
     }
 
     ps2_disable_interrupt();
