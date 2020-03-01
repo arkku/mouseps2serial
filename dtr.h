@@ -14,6 +14,7 @@
 #endif
 
 #define SERIAL_STATE_DDR        DTR_PASTE(DDR, SERIAL_STATE_PORT)
+#define SERIAL_STATE_PORT_REG   DTR_PASTE(PORT, SERIAL_STATE_PORT)
 #define SERIAL_STATE_PIN        DTR_PASTE(PIN, SERIAL_STATE_PORT)
 #define SERIAL_DTR_BIT          ((uint8_t) (1U << (SERIAL_DTR_PIN)))
 #define SERIAL_DTR_INT          DTR_PASTE(INT, SERIAL_DTR_INT_NUM)
@@ -27,6 +28,7 @@
 #define is_serial_powered()     ((SERIAL_STATE_PIN & SERIAL_DTR_BIT) != 0)
 
 #define serial_dtr_set_input()  do { SERIAL_STATE_DDR &= ~SERIAL_DTR_BIT; } while (0)
+#define serial_dtr_set_pull_up() do { SERIAL_STATE_PORT_REG |= SERIAL_DTR_BIT; } while (0)
 
 #define serial_dtr_int_on_change()  do { EICRA = (EICRA & ~SERIAL_DTR_ISC1_BIT) | SERIAL_DTR_ISC0_BIT; } while (0)
 

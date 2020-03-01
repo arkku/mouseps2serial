@@ -14,7 +14,6 @@ BAUD ?= 57600UL
 
 LFUSE ?= BF
 HFUSE ?= C7
-#HFUSE ?= D7
 EFUSE ?= FD
 
 #### BURNER ###################################################################
@@ -37,7 +36,7 @@ ARFLAGS=rcs
 OBJCOPY=avr-objcopy
 AVRDUDE=avrdude
 
-AVR_FLAGS=-mmcu=$(MCU) -DF_CPU=$(F_CPU) -DBAUD=$(BAUD)
+AVR_FLAGS=-mmcu=$(MCU) -DF_CPU=$(F_CPU) -DBAUD=$(BAUD) -DKK_UART_TRANSMIT_BUFFER_SIZE=0
 
 HEX=ps2serial.hex
 BIN=ps2serial.elf

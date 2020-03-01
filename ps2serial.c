@@ -21,8 +21,8 @@
  *      0 1 x x  2400 bps (except debug mode, see below)
  *      1 0 x x  4800 bps
  *      1 1 x x  9600 bps
- *      x x 0 0  Microsoft protocol (7N1)
- *      x x 0 1  Microsoft protocol with wheel (7N1)
+ *      x x 0 0  Microsoft protocol (7N2)
+ *      x x 0 1  Microsoft protocol with wheel (7N2)
  *      x x 1 0  Mouse Systems protocol (8N1)
  *      x 0 1 1  Sun protocol (8N1)
  *      0 1 1 1  Debug output (8N1, compile-time determined baud rate)
@@ -69,7 +69,23 @@
 #include "dtr.h"
 #include "led.h"
 
+#ifndef USE_5_BUTTON_MODE
+// Set this to 1 to enable 5-button mode in the PS/2 mouse.
+// None of the serial protocol support more than 4 buttons, but the option
+// `MAP_BUTTON_4_TO_MMB` allows mapping button 4 to an alternate middle button.
 #define USE_5_BUTTON_MODE 1
+#endif
+
+#ifndef MAP_BUTTON_4_TO_MMB
+/// In 5-button mode, map button 4 to the middle button.
+#define MAP_BUTTON_4_TO_MMB 1
+#endif
+
+#ifndef USE_DTR_FLOW_CONTROL
+/// Set this to 1 to inhibit mouse movement output when DTR is low.
+/// In debug mode this does not affect other messages than movement.
+#define USE_DTR_FLOW_CONTROL 1
+#endif
 
 static uint8_t serial_enabled = 0;
 static volatile uint8_t serial_state_changed = 0;
@@ -107,7 +123,7 @@ static uint8_t mouse_resolution = PS2_RESOLUTION_4_MM;
 static uint8_t mouse_rate = 40U;
 
 #define is_debug    (protocol == PROTOCOL_DEBUG)
-#define uart_mode   (protocol <= PROTOCOL_MICROSOFT_WHEEL ? UART_MODE_7N1 : UART_MODE_8N1)
+#define uart_mode   (protocol <= PROTOCOL_MICROSOFT_WHEEL ? UART_MODE_7N2 : UART_MODE_8N1)
 #define is_wheel_wanted (protocol == PROTOCOL_MICROSOFT_WHEEL || is_debug)
 
 static uint8_t mouse_id = MOUSE_ID_NONE;
@@ -115,14 +131,21 @@ static int mouse_x = 0;
 static int mouse_y = 0;
 static int mouse_z = 0;
 static uint8_t mouse_buttons = 0;
+static uint8_t last_sent_buttons = 0;
 
 static bool error_reported = false;
 
-#define is_lmb_pressed      ((mouse_buttons & 0x01) != 0)
-#define is_rmb_pressed      ((mouse_buttons & 0x02) != 0)
-#define is_mmb_pressed      ((mouse_buttons & 0x04) != 0)
+#define LMB_BIT ((uint8_t) (0x01U))
+#define RMB_BIT ((uint8_t) (0x02U))
+#define MMB_BIT ((uint8_t) (0x04U))
+#define B4_BIT  ((uint8_t) (0x10U))
+#define B5_BIT  ((uint8_t) (0x20U))
 
-#define capped_to_int8(x)   ((int8_t) (((x) > 127) ? 127 : (((x) < -127) ? -127 : (x))))
+#define is_lmb_pressed      ((mouse_buttons & LMB_BIT) != 0)
+#define is_rmb_pressed      ((mouse_buttons & RMB_BIT) != 0)
+#define is_mmb_pressed      ((mouse_buttons & MMB_BIT) != 0)
+
+#define capped_to_int8(x)   ((int8_t) (((x) > 127) ? 127 : (((x) < -128) ? -128 : (x))))
 
 #define delta_x             capped_to_int8(mouse_x)
 #define delta_y             capped_to_int8(mouse_y)
@@ -142,6 +165,7 @@ mouse_reset_counters (void) {
     mouse_x = 0;
     mouse_y = 0;
     mouse_z = 0;
+    last_sent_buttons = mouse_buttons;
 }
 
 #define mouse_has_moved() (mouse_x || mouse_y || mouse_z)
@@ -202,7 +226,10 @@ mouse_input (void) {
 
         if (zb) {
             if (mouse_wheel == MOUSE_ID_WHEEL5) {
-                buttons |= ((uint8_t) (zb & 0x30) >> 1);
+                buttons |= (uint8_t) (zb & 0x30U);
+#if defined(MAP_BUTTON_4_TO_MMB) && MAP_BUTTON_4_TO_MMB != 0
+                buttons |= (buttons & B4_BIT) ? MMB_BIT : 0U;
+#endif
             }
 
             zb &= 0x0FU;
@@ -242,45 +269,92 @@ mouse_send_debug_state (const bool is_delta, const int dx, const int dy, const i
 }
 
 static void
+mouse_send_microsoft_state (const bool has_wheel, const int dx, const int dy, const int dz) {
+    uint8_t x = (uint8_t) dx;
+    uint8_t y = (uint8_t) dy;
+    uint8_t byte = (1U << 6);
+    byte |= is_lmb_pressed ? (1U << 5) : 0U;
+    byte |= is_rmb_pressed ? (1U << 4) : 0U;
+    byte |= (x >> 6);
+    byte |= (y >> 6) << 2;
+    x &= 0x3FU;
+    y &= 0x3FU;
+    uart_putc(byte);
+    uart_putc(x);
+    uart_putc(y);
+
+    if (has_wheel && (dz || is_mmb_pressed || (last_sent_buttons & MMB_BIT))) {
+        byte = (uint8_t) dz;
+        byte &= 0x0FU;
+        byte |= is_mmb_pressed ? (1U << 5) : 0U;
+        uart_putc(byte);
+    }
+}
+
+static void
+mouse_send_sun_motions (const int dx, const int dy) {
+    uint8_t byte = (uint8_t) dx;
+    uart_putc(byte);
+    byte = (uint8_t) capped_to_int8(-dy);
+    uart_putc(byte);
+}
+
+static void
+mouse_send_sun_state (const int dx, const int dy) {
+    uint8_t byte = 0x80U;
+    byte |= is_lmb_pressed ? 0U : 4U;
+    byte |= is_mmb_pressed ? 0U : 2U;
+    byte |= is_rmb_pressed ? 0U : 1U;
+    uart_putc(byte);
+    mouse_send_sun_motions(dx, dy);
+}
+
+static void
 mouse_send_to_serial (void) {
+    wdt_reset();
+
+#if defined(USE_DTR_FLOW_CONTROL) && USE_DTR_FLOW_CONTROL != 0
+    if (!serial_enabled) {
+        mouse_reset_counters();
+        return;
+    }
+#endif
+
     int dx = delta_x;
     int dy = delta_y;
     int dz = delta_z;
 
-    wdt_reset();
-    mouse_reset_counters();
-
-    if (!(serial_enabled || protocol >= PROTOCOL_SUN)) {
-        return;
-    }
-
     switch (protocol) {
     case PROTOCOL_MICROSOFT:
+        mouse_send_microsoft_state(false, dx, dy, dz);
+        break;
+
     case PROTOCOL_MICROSOFT_WHEEL:
-        // TODO:
+        mouse_send_microsoft_state(true, dx, dy, dz);
         break;
 
     case PROTOCOL_MOUSE_SYSTEMS:
-    case PROTOCOL_SUN:
-        // TODO:
+        // fallthrough
+    case PROTOCOL_SUN: {
+        mouse_send_sun_state(dx, mouse_y);
         break;
+    }
 
     case PROTOCOL_DEBUG:
         mouse_send_debug_state(false, dx, dy, dz);
         break;
     }
 
+    mouse_reset_counters();
+
     if (protocol == PROTOCOL_MOUSE_SYSTEMS || is_debug) {
         mouse_input();
 
-        int dx = delta_x;
-        int dy = delta_y;
-        int dz = delta_z;
-
+        dx = delta_x;
         if (protocol == PROTOCOL_MOUSE_SYSTEMS) {
-            // TODO:
+            mouse_send_sun_motions(dx, mouse_y);
         } else if (dx || dy || dz) {
-            mouse_send_debug_state(true, dx, dy, dz);
+            mouse_send_debug_state(true, dx, delta_y, delta_z);
         }
 
         mouse_reset_counters();
@@ -476,8 +550,8 @@ dip_set_input (void) {
  *      0 1 x x  2400 bps
  *      1 0 x x  4800 bps
  *      1 1 x x  9600 bps
- *      x x 0 0  Microsoft protocol (7N1)
- *      x x 0 1  Microsoft protocol with wheel (7N1)
+ *      x x 0 0  Microsoft protocol (7N2)
+ *      x x 0 1  Microsoft protocol with wheel (7N2)
  *      x x 1 0  Mouse Systems protocol (8N1)
  *      x 0 1 1  Sun protocol (8N1)
  *      x 1 1 1  Debug output (8N1)
@@ -554,6 +628,7 @@ setup (const bool is_power_up) {
 
     // Watch the serial port power state from the DTR pin (connected to INT1)
     serial_dtr_set_input();
+    serial_dtr_set_pull_up();
 
     // Set up the PS/2 port
     ps2_enable();
@@ -614,6 +689,12 @@ setup (const bool is_power_up) {
 
 static void
 mouse_send_id (void) {
+#if defined(USE_DTR_FLOW_CONTROL) && USE_DTR_FLOW_CONTROL != 0
+    if (!(serial_enabled || is_debug)) {
+        return;
+    }
+#endif
+
     switch (protocol) {
     case PROTOCOL_MICROSOFT:
         if (is_mouse_ready) {
@@ -627,7 +708,12 @@ mouse_send_id (void) {
         }
         break;
 
-    case PROTOCOL_DEBUG:
+    case PROTOCOL_DEBUG: {
+        extern int __heap_start, *__brkval;
+
+        int free_bytes = ((int) &free_bytes) - (__brkval ? (int) __brkval : (int) &__heap_start);
+        (void) fprintf_P(uart, PSTR("RAM: %d bytes\r\n"), free_bytes);
+
         if (is_mouse_ready) {
             (void) fprintf_P(uart, PSTR("Mouse: %02X, DTR: %c, "),
                             mouse_id,
@@ -638,6 +724,7 @@ mouse_send_id (void) {
         }
         dip_send_state();
         break;
+    }
 
     default:
         break;

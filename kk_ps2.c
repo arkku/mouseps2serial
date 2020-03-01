@@ -108,7 +108,7 @@ static volatile uint8_t ps2_data_byte = 0;
 static volatile char ps2_error = 0;
 
 #ifndef KK_PS2_BUFFER_SIZE
-#define KK_PS2_BUFFER_SIZE 64
+#define KK_PS2_BUFFER_SIZE 128
 #endif
 
 static uint8_t ps2_buffer[KK_PS2_BUFFER_SIZE];
