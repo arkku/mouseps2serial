@@ -1,6 +1,13 @@
 /**
  * ps2serial.c: A PS/2 mouse to serial converter for ATmega328P (and others).
  *
+ * This reads input from a PS/2 mouse (with support for wheel and 5 buttons),
+ * and converts it to a serial mouse protocol. The supported protocols include
+ * Microsoft (the classic PC serial mouse), with optional wheel and third
+ * button support, Mouse Systems, and Sun (which is a variant of the Mouse
+ * Systems protocol). Additionally there is a debug mode, which outputs
+ * human-readable text.
+ *
  * The PS/2 CLK must be connected to the INT0 pin, and the serial port DTR
  * pin must be connected to the INT1 pin. The PS/2 data pin may be connected
  * to any free pin on the same port as the CLK. The microcontroller's UART
@@ -38,7 +45,7 @@
  * the combination of 2400 bps and debug mode instead chooses the serial port
  * rate defined as `BAUD` at compile-time. For example, if a bootloader is
  * used, this option allows running at the bootloader's rate in debug mode.
- * This option also enables output of the raw incoming mouse packets, whereas
+ * This option also enables output of the raw incoming PS/2 packets, whereas
  * the normal 9600 bps mode only shows the parsed output.
  *
  * Copyright (c) 2020 Kimmo Kulovesi, https://arkku.dev/
@@ -81,10 +88,10 @@
 #define MAP_BUTTON_4_TO_MMB 1
 #endif
 
-#ifndef USE_DTR_FLOW_CONTROL
+#ifndef REQUIRE_DTR_HIGH_TO_OPERATE
 /// Set this to 1 to inhibit mouse movement output when DTR is low.
 /// In debug mode this does not affect other messages than movement.
-#define USE_DTR_FLOW_CONTROL 1
+#define REQUIRE_DTR_HIGH_TO_OPERATE 1
 #endif
 
 static uint8_t serial_enabled = 0;
@@ -108,15 +115,35 @@ ISR (SERIAL_DTR_INT_VECTOR, ISR_NOBLOCK) {
 
 enum mouse_protocol {
     PROTOCOL_MICROSOFT = 0,
-    PROTOCOL_MICROSOFT_WHEEL = 1,
-    PROTOCOL_MOUSE_SYSTEMS = 2,
-    PROTOCOL_SUN = 3,
-    PROTOCOL_DEBUG = 4
+    PROTOCOL_MICROSOFT_WHEEL,
+    PROTOCOL_MOUSE_SYSTEMS,
+    PROTOCOL_SUN,
+    PROTOCOL_DEBUG
 };
 
-static enum mouse_protocol protocol = PROTOCOL_MICROSOFT;
+#define EXP_(x) x##1
+#define EXP(x) EXP_(x)
 
+#if defined(FORCE_SERIAL_PROTOCOL) && (EXP(FORCE_SERIAL_PROTOCOL) == 1)
+#undef FORCE_SERIAL_PROTOCOL
+#endif
+#if defined(FORCE_BAUD) && (EXP(FORCE_BAUD) == 1)
+#undef FORCE_BAUD
+#endif
+
+#ifdef FORCE_SERIAL_PROTOCOL
+#define protocol ((enum mouse_protocol) (FORCE_SERIAL_PROTOCOL))
+#warning Serial protocol selection via DIP switches disabled (FORCE_SERIAL_PROTOCOL)
+#else
+static enum mouse_protocol protocol = PROTOCOL_MICROSOFT;
+#endif
+
+#ifdef FORCE_BAUD
+#warning Serial speed selection via DIP switches disabled (FORCE_BAUD)
+#define baud ((uint32_t) FORCE_BAUD)
+#else
 static uint32_t baud = 1200UL;
+#endif
 
 static uint8_t mouse_resolution = PS2_RESOLUTION_4_MM;
 
@@ -313,7 +340,7 @@ static void
 mouse_send_to_serial (void) {
     wdt_reset();
 
-#if defined(USE_DTR_FLOW_CONTROL) && USE_DTR_FLOW_CONTROL != 0
+#if defined(REQUIRE_DTR_HIGH_TO_OPERATE) && REQUIRE_DTR_HIGH_TO_OPERATE != 0
     if (!serial_enabled) {
         mouse_reset_counters();
         return;
@@ -558,19 +585,26 @@ dip_set_input (void) {
  */
 static void
 dip_read_settings (void) {
+#ifndef FORCE_BAUD
     // DIP 1 & 2 select the baud rate
     baud = 1200UL * (dip_state(1) ? 2UL : 1UL);
     baud *= dip_state(0) ? 4UL : 1UL;
+#endif
 
+#ifndef FORCE_SERIAL_PROTOCOL
     // DIP 3 & 4 select the protocol
     protocol = (dip_state(2) ? 2 : 0) | (dip_state(3) ? 1 : 0);
 
     if (protocol == 3 && dip_state(1)) {
         protocol = PROTOCOL_DEBUG;
-        if (baud != 9600UL) {
-            baud = BAUD;
-        }
     }
+#endif
+
+#ifndef FORCE_BAUD
+    if (protocol == PROTOCOL_DEBUG && baud != 9600UL) {
+        baud = BAUD;
+    }
+#endif
 
     switch (baud) {
     case 4800UL:
@@ -650,10 +684,6 @@ setup (const bool is_power_up) {
     int_fast8_t attempts_remaining;
 
     if (is_power_up) {
-        const bool serial_state = is_serial_powered();
-        serial_enabled = serial_state;
-        serial_state_changed = serial_state;
-
         if (is_debug) {
             uart_putc('!');
         }
@@ -685,11 +715,21 @@ setup (const bool is_power_up) {
         }
         _delay_ms(100);
     }
+
+    byte = serial_enabled;
+
+    const bool serial_state = is_serial_powered();
+    serial_enabled = serial_state;
+    if (is_power_up) {
+        serial_state_changed = serial_state;
+    } else {
+        serial_state_changed = (serial_enabled != byte);
+    }
 }
 
 static void
 mouse_send_id (void) {
-#if defined(USE_DTR_FLOW_CONTROL) && USE_DTR_FLOW_CONTROL != 0
+#if defined(REQUIRE_DTR_HIGH_TO_OPERATE) && REQUIRE_DTR_HIGH_TO_OPERATE != 0
     if (!(serial_enabled || is_debug)) {
         return;
     }

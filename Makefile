@@ -3,6 +3,7 @@
 ###############################################################################
 # Put your local settings in "local.mk", it is ignored by Git.
 -include local.mk
+
 ### AVR MCU ###################################################################
 # Only tested with ATmega328P.
 
@@ -10,11 +11,21 @@ MCU ?= atmega328p
 F_CPU ?= 16000000UL
 
 # Bootloader rate only, the device itself is configured by DIP switches
-BAUD ?= 57600UL
+BAUD ?= 115200UL
 
 LFUSE ?= BF
 HFUSE ?= C7
 EFUSE ?= FD
+
+### CONFIGURATION #############################################################
+# Define these to hard-code settings instead of supporting DIP configuration;
+# this reduces the size of the binary by about half when the debug output
+# support is removed.
+#FORCE_PROTOCOL ?= PROTOCOL_MICROSOFT
+#FORCE_BAUD ?= 1200UL
+
+FORCE_PROTOCOL ?=
+FORCE_BAUD ?=
 
 #### BURNER ###################################################################
 # Specify the burner on the command-line if you wish, e.g.,
@@ -27,9 +38,8 @@ BURNER ?= dragon_isp
 # Burner speed
 #BPS ?= 115200
 ###############################################################################
-
 CC=avr-gcc
-CFLAGS=-Wall -std=c11 -pedantic -Wextra -Wno-unused-parameter -Os $(AVR_FLAGS)
+CFLAGS=-Wall -std=c11 -pedantic -Wextra -Wno-unused-parameter -Os $(AVR_FLAGS) -DFORCE_SERIAL_PROTOCOL=$(FORCE_PROTOCOL) -DFORCE_BAUD=$(FORCE_BAUD)
 LDFLAGS=-Os $(AVR_FLAGS)
 AR=avr-ar
 ARFLAGS=rcs
@@ -79,9 +89,6 @@ unlock:
 lock:
 	$(AVRDUDE) -c $(BURNER) $(if $(PORT),-P $(PORT) ,)$(if $(BPS),-b $(BPS) ,)-p $(MCU) -U lock:w:0x0F:m -v
 
-ihex:
-	cd ihex && $(MAKE)
-
 .ccls: Makefile
 	@echo clang >$@
 	@echo --target=avr >>$@
@@ -96,4 +103,4 @@ clean:
 distclean: | clean
 	rm -f $(HEX) $(BIN) .ccls
 
-.PHONY: all ihex clean distclean burn fuses upload lock unlock bootloader
+.PHONY: all clean distclean burn fuses upload lock unlock bootloader
