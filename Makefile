@@ -10,11 +10,11 @@ MCU ?= atmega328p
 F_CPU ?= 16000000UL
 
 # Bootloader rate only, the device itself is configured by DIP switches
-BAUD ?= 9600UL
+BAUD ?= 57600UL
 
 LFUSE ?= BF
-#HFUSE ?= C7
-HFUSE ?= D7
+HFUSE ?= C7
+#HFUSE ?= D7
 EFUSE ?= FD
 
 #### BURNER ###################################################################

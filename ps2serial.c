@@ -18,20 +18,28 @@
  *
  *      1 2 3 4  Setting
  *      0 0 x x  1200 bps
- *      0 1 x x  2400 bps
+ *      0 1 x x  2400 bps (except debug mode, see below)
  *      1 0 x x  4800 bps
  *      1 1 x x  9600 bps
  *      x x 0 0  Microsoft protocol (7N1)
  *      x x 0 1  Microsoft protocol with wheel (7N1)
  *      x x 1 0  Mouse Systems protocol (8N1)
  *      x 0 1 1  Sun protocol (8N1)
- *      x 1 1 1  Debug output (8N1)
+ *      0 1 1 1  Debug output (8N1, compile-time determined baud rate)
+ *      1 1 1 1  Debug output (8N1, 9600 bps)
  *
  * Note that if the DIP switches are not installed, the default settings will
  * be Microsoft protocol at 1200 bps, which is the normal PC serial mouse.
  * The DIP switches are only read at reset, changing them on the fly is safe
  * but has no effect until restart. A reset may be forced by sending an
  * exclamation mark `!` over the serial port.
+ *
+ * The debug mode may use either 9600 bps as per the usual DIP settings, but
+ * the combination of 2400 bps and debug mode instead chooses the serial port
+ * rate defined as `BAUD` at compile-time. For example, if a bootloader is
+ * used, this option allows running at the bootloader's rate in debug mode.
+ * This option also enables output of the raw incoming mouse packets, whereas
+ * the normal 9600 bps mode only shows the parsed output.
  *
  * Copyright (c) 2020 Kimmo Kulovesi, https://arkku.dev/
  * Provided with absolutely no warranty, use at your own risk only.
@@ -92,11 +100,11 @@ enum mouse_protocol {
 
 static enum mouse_protocol protocol = PROTOCOL_MICROSOFT;
 
-static int baud = 1200;
+static uint32_t baud = 1200UL;
 
-static uint8_t mouse_resolution = PS2_RESOLUTION_8_MM;
+static uint8_t mouse_resolution = PS2_RESOLUTION_4_MM;
 
-static uint8_t mouse_rate = 40;
+static uint8_t mouse_rate = 40U;
 
 #define is_debug    (protocol == PROTOCOL_DEBUG)
 #define uart_mode   (protocol <= PROTOCOL_MICROSOFT_WHEEL ? UART_MODE_7N1 : UART_MODE_8N1)
@@ -107,7 +115,6 @@ static int mouse_x = 0;
 static int mouse_y = 0;
 static int mouse_z = 0;
 static uint8_t mouse_buttons = 0;
-static volatile uint8_t mouse_has_reported = 0;
 
 static bool error_reported = false;
 
@@ -164,7 +171,7 @@ mouse_input (void) {
         int y = (int) ps2_get_byte();
         uint8_t zb = (mouse_wheel ? (uint8_t) ps2_get_byte() : 0U);
 
-        if (is_debug) {
+        if (is_debug && baud > 9600UL) {
             if (mouse_wheel) {
                 (void) fprintf_P(uart, PSTR("[%02X %02X %02X %02X]\r\n"), (unsigned) flags, (unsigned) x, (unsigned) y, (unsigned) zb);
             } else {
@@ -174,12 +181,13 @@ mouse_input (void) {
 
         if (!(flags & MOUSE_ALWAYS_1_FLAG)) {
             // Invalid packet, ignore it
+            if (is_debug) {
+                (void) fprintf_P(uart, PSTR("Invalid flags: %02X\r\n"), (unsigned) flags);
+            }
             continue;
         }
 
         wdt_reset();
-
-        mouse_has_reported = 1;
 
         if (flags & MOUSE_X_SIGN_FLAG) {
             x -= 256;
@@ -218,6 +226,22 @@ mouse_input (void) {
 }
 
 static void
+mouse_send_debug_state (const bool is_delta, const int dx, const int dy, const int dz) {
+    (void) fprintf_P(uart, PSTR("%cx=%4d\ty=%4d\t%c%c%c"),
+        is_delta ? '\'' : ' ',
+        dx, dy,
+        is_lmb_pressed ? 'L' : ' ',
+        is_mmb_pressed ? 'M' : ' ',
+        is_rmb_pressed ? 'R' : ' '
+    );
+    if (dz) {
+        (void) fprintf_P(uart, PSTR("\tw=%2d"), dz);
+    }
+    uart_putc('\r');
+    uart_putc('\n');
+}
+
+static void
 mouse_send_to_serial (void) {
     int dx = delta_x;
     int dy = delta_y;
@@ -242,12 +266,7 @@ mouse_send_to_serial (void) {
         break;
 
     case PROTOCOL_DEBUG:
-        (void) fprintf_P(uart, PSTR("%cx=%d y=%d z=%d %c%c%c\r\n"),
-            ' ', dx, dy, dz,
-            is_lmb_pressed ? 'L' : ' ',
-            is_mmb_pressed ? 'M' : ' ',
-            is_rmb_pressed ? 'R' : ' '
-        );
+        mouse_send_debug_state(false, dx, dy, dz);
         break;
     }
 
@@ -260,13 +279,8 @@ mouse_send_to_serial (void) {
 
         if (protocol == PROTOCOL_MOUSE_SYSTEMS) {
             // TODO:
-        } else {
-            (void) fprintf_P(uart, PSTR("%cx=%d y=%d z=%d %c%c%c\r\n"),
-                '\'', dx, dy, dz,
-                is_lmb_pressed ? 'L' : ' ',
-                is_mmb_pressed ? 'M' : ' ',
-                is_rmb_pressed ? 'R' : ' '
-            );
+        } else if (dx || dy || dz) {
+            mouse_send_debug_state(true, dx, dy, dz);
         }
 
         mouse_reset_counters();
@@ -309,6 +323,7 @@ read_mouse_id (void) {
 static bool
 mouse_init (const bool do_reset) {
     wdt_reset();
+    error_reported = false;
 
     int byte;
 
@@ -469,12 +484,37 @@ dip_set_input (void) {
  */
 static void
 dip_read_settings (void) {
-    baud = 1200U * (dip_state(1) ? 2U : 1U);
-    baud *= dip_state(0) ? 4 : 1;
+    // DIP 1 & 2 select the baud rate
+    baud = 1200UL * (dip_state(1) ? 2UL : 1UL);
+    baud *= dip_state(0) ? 4UL : 1UL;
 
+    // DIP 3 & 4 select the protocol
     protocol = (dip_state(2) ? 2 : 0) | (dip_state(3) ? 1 : 0);
+
     if (protocol == 3 && dip_state(1)) {
         protocol = PROTOCOL_DEBUG;
+        if (baud != 9600UL) {
+            baud = BAUD;
+        }
+    }
+
+    switch (baud) {
+    case 4800UL:
+        mouse_rate = 100U;
+        break;
+    case 2400UL:
+        mouse_rate = 80U;
+        break;
+    case 1200UL:
+        mouse_rate = 40U;
+        break;
+    default:
+        if (baud > 4800UL) {
+            mouse_rate = 200U;
+        } else {
+            mouse_rate = 40U;
+        }
+        break;
     }
 }
 
