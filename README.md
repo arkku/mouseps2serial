@@ -22,9 +22,9 @@ The default pin assignments are as follows:
 
 * PD2/INT0: PS/2 CLK
 * PD4: PS/2 DATA
-* PD0/RXD: Serial output (from computer to mouse, optional))
+* PD0/RXD: Serial output (from computer to mouse, optional)
 * PD1/TXD: Serial input (to computer)
-* PD3: Serial DTR (optional, but recommended)
+* PD3: Serial DTR from computer (or tie to ground for always active)
 * PB5/SCK: Indicator LED (optional)
 * PC2: DIP switch 1 (optional)
 * PC3: DIP switch 2 (optional)
@@ -56,6 +56,9 @@ or you will fry the pins! However, most PC serial ports will accept _input_ at
 optional, although mouse auto-detection/recognition will not work without
 DTR. For full serial port support, you can use a logic level to RS-232
 converter, such as a MAX232 chip.
+
+The DTR defaults to active low, which means that if you do not connect it to an
+actual serial port DTR output, you should physically connect the pin to ground.
 
 If the indicator LED is installed, it obviously needs a current-limiting
 resistor in series.
@@ -100,12 +103,17 @@ one or two jumpers instead of 4 switches, for example.
 The DTR line is used to view the state of the serial port. With serial serial
 mice, the line is used to supply power to the mouse, and hence the mouse works
 only when the line is supplying the voltage. However, if you use a logic level
-serial port with this converter, the state may be inverted. Hence the setting
-`SERIAL_STATE_INVERTED`, which defaults to `1` (for on). You may configure it
-at compile time:
+serial port with this converter, the state is typically inverted, which is why
+the default is active low. This may be changed with the setting
+`SERIAL_STATE_INVERTED`. You may configure it at compile time:
 
     make clean
     make SERIAL_STATE_INVERTED=0
+
+Note that the internal pull-up on the DTR pin means the default state is high,
+i.e., not active when inverted and active when inverted. With the default,
+inverted, setting you should physically tie the pin to ground if it is unused,
+but with the non-inverted setting it may be simply left unconnected.
 
 ## Installation
 
