@@ -19,33 +19,33 @@
 /// relatively generous compared to the 20 ms specified.
 extern uint8_t ps2_reply_timeout_ms;
 
-/// Successfully received and recognized previous byte
+/// Successfully received and recognized previous byte.
 #define PS2_REPLY_ACK               ((uint8_t) 0xFAU)
 
-/// Error in previous byte (e.g., invalid command/argument)
+/// Error in previous byte (e.g., invalid command/argument).
 #define PS2_REPLY_ERROR             ((uint8_t) 0xFCU)
 
-/// Request to resend the previous byte
+/// Request to resend the previous byte.
 #define PS2_REPLY_RESEND            ((uint8_t) 0xFEU)
 
-// The power-on/reset test has passed successfully
+// The power-on/reset test has passed successfully.
 #define PS2_REPLY_TEST_PASSED       ((uint8_t) 0xAAU)
 
 // MARK: - Commands
 
-/// Reset the device
+/// Reset the device.
 #define PS2_COMMAND_RESET           ((uint8_t) 0xFFU)
 
-/// Request resend of previous byte
+/// Request resend of the previous packet.
 #define PS2_COMMAND_RESEND          ((uint8_t) 0xFEU)
 
-/// Request id (mouse replies with one byte, keyboard with two)
+/// Request id (mouse replies with one byte, keyboard with two).
 #define PS2_COMMAND_ID              ((uint8_t) 0xF2U)
 
-/// Enable reporting
+/// Enable reporting.
 #define PS2_COMMAND_ENABLE          ((uint8_t) 0xF4U)
 
-/// Disable reporting
+/// Disable reporting.
 #define PS2_COMMAND_DISABLE         ((uint8_t) 0xF5U)
 
 /// Set the keyboard mode / scan code set. The argument is a single byte
@@ -62,7 +62,7 @@ extern uint8_t ps2_reply_timeout_ms;
 /// sends status updates automatically.
 #define PS2_COMMAND_STREAM_MODE     ((uint8_t) 0xEAU)
 
-/// Request status
+/// Request status.
 #define PS2_COMMAND_STATUS          ((uint8_t) 0xE9U)
 
 /// Set the reporting rate.
@@ -80,13 +80,13 @@ extern uint8_t ps2_reply_timeout_ms;
 /// - bit 2: caps lock
 #define PS2_COMMAND_SET_LEDS        ((uint8_t) 0xEDU)
 
-/// Enable mouse scaling (acceleration)
+/// Enable mouse scaling (acceleration).
 #define PS2_COMMAND_DISABLE_SCALING ((uint8_t) 0xE6U)
 
-/// Disable mouse scaling (acceleration)
+/// Disable mouse scaling (acceleration).
 #define PS2_COMMAND_ENABLE_SCALING  ((uint8_t) 0xE7U)
 
-/// Set the mouse resolution
+/// Set the mouse resolution.
 #define PS2_COMMAND_SET_RESOLUTION  ((uint8_t) 0xE8U)
 
 #define PS2_RESOLUTION_1_MM         ((uint8_t) 0x00U)
@@ -124,6 +124,9 @@ extern uint8_t ps2_reply_timeout_ms;
 /// Requests the device to echo back the same data. This is only
 /// useful for testing.
 #define PS2_COMMAND_ECHO                ((uint8_t) 0xEEU)
+
+/// Clears the echo mode if set (and supported).
+#define PS2_COMMAND_CLEAR_ECHO          ((uint8_t) 0xECU)
 
 // MARK: - Errors
 
