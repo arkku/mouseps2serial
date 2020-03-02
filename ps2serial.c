@@ -114,11 +114,11 @@ ISR (SERIAL_DTR_INT_VECTOR, ISR_NOBLOCK) {
 #define MOUSE_ID_WHEEL5     ((uint8_t) 0x04U)
 
 enum mouse_protocol {
-    PROTOCOL_MICROSOFT = 0,
-    PROTOCOL_MICROSOFT_WHEEL,
-    PROTOCOL_MOUSE_SYSTEMS,
-    PROTOCOL_SUN,
-    PROTOCOL_DEBUG
+    PROTOCOL_MICROSOFT          = 0,
+    PROTOCOL_MICROSOFT_WHEEL    = 1,
+    PROTOCOL_MOUSE_SYSTEMS      = 2,
+    PROTOCOL_SUN                = 3,
+    PROTOCOL_DEBUG              = 4
 };
 
 #define EXP_(x) x##1
@@ -308,8 +308,8 @@ mouse_send_microsoft_state (const bool has_wheel, const int dx, const int dy, co
     uint8_t byte = (1U << 6);
     byte |= is_lmb_pressed ? (1U << 5) : 0U;
     byte |= is_rmb_pressed ? (1U << 4) : 0U;
-    byte |= (x >> 6);
-    byte |= (y >> 6) << 2;
+    byte |= ((uint8_t) (x >> 6)) & 0x03U;
+    byte |= ((uint8_t) (y >> 4)) & 0x0CU;
     x &= 0x3FU;
     y &= 0x3FU;
     uart_putc(byte);
@@ -381,7 +381,7 @@ mouse_send_to_serial (void) {
     mouse_reset_counters();
 
     if (protocol == PROTOCOL_MOUSE_SYSTEMS || is_debug) {
-        mouse_input();
+        (void) mouse_input();
 
         dx = delta_x;
         if (protocol == PROTOCOL_MOUSE_SYSTEMS) {
@@ -599,7 +599,7 @@ dip_read_settings (void) {
 
 #ifndef FORCE_SERIAL_PROTOCOL
     // DIP 3 & 4 select the protocol
-    protocol = (dip_state(2) ? 2 : 0) | (dip_state(3) ? 1 : 0);
+    protocol = (dip_state(2) ? 2U : 0U) | (dip_state(3) ? 1U : 0U);
 
     if (protocol == 3 && dip_state(1)) {
         protocol = PROTOCOL_DEBUG;
@@ -707,29 +707,30 @@ setup (const bool is_power_up) {
             _delay_ms(100);
 
             // Try to init the mouse without resetting (got power-up message)
-            if (mouse_init(false)) {
-                return;
+            if (mouse_init(false) && is_debug) {
+                uart_puts_P(PSTR("Init from power-up\r\n"));
             }
         }
     }
 
     // Attempt to initialize the mouse
-    attempts_remaining = 5;
+    attempts_remaining = 10;
     while (!mouse_init(true) && attempts_remaining--) {
         if (!ps2_is_ok()) {
             ps2_enable();
         }
-        _delay_ms(100);
+        _delay_ms(200);
     }
 
-    byte = serial_enabled;
-
     const bool serial_state = is_serial_powered();
-    serial_enabled = serial_state;
+
     if (is_power_up) {
+        // Initial DTR state
         serial_state_changed = serial_state;
-    } else {
-        serial_state_changed = (serial_enabled != byte);
+        serial_enabled = serial_state;
+    } else if (serial_state != serial_enabled) {
+        serial_enabled = serial_state;
+        serial_state_changed = true;
     }
 }
 
@@ -743,29 +744,25 @@ mouse_send_id (void) {
 
     switch (protocol) {
     case PROTOCOL_MICROSOFT:
-        if (is_mouse_ready) {
-            uart_putc('M');
-        }
+        uart_putc('M');
         break;
 
     case PROTOCOL_MICROSOFT_WHEEL:
-        if (is_mouse_ready) {
-            uart_putc('Z');
-        }
+        uart_putc('Z');
         break;
 
     case PROTOCOL_DEBUG: {
         extern int __heap_start, *__brkval;
 
         int free_bytes = ((int) &free_bytes) - (__brkval ? (int) __brkval : (int) &__heap_start);
-        (void) fprintf_P(uart, PSTR("RAM: %d bytes\r\n"), free_bytes);
+        (void) fprintf_P(uart, PSTR("RAM: %d "), free_bytes);
 
         if (is_mouse_ready) {
             (void) fprintf_P(uart, PSTR("Mouse: %02X, DTR: %c, "),
                             mouse_id,
                             (serial_enabled ? '1' : '0'));
         } else {
-            (void) fprintf_P(uart, PSTR("No mouse, DTR: %c, "),
+            (void) fprintf_P(uart, PSTR("Mouse: N/A, DTR: %c, "),
                             (serial_enabled ? '1' : '0'));
         }
         dip_send_state();
