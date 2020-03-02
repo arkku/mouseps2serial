@@ -25,7 +25,7 @@
 #define SERIAL_DTR_ISC0_BIT     ((uint8_t) (1U << (SERIAL_DTR_ISC0)))
 #define SERIAL_DTR_ISC1_BIT     ((uint8_t) (1U << (SERIAL_DTR_ISC1)))
 
-#define is_serial_powered()     ((SERIAL_STATE_PIN & SERIAL_DTR_BIT) != 0)
+#define serial_dtr_state()      ((SERIAL_STATE_PIN & SERIAL_DTR_BIT) != 0)
 
 #define serial_dtr_set_input()  do { SERIAL_STATE_DDR &= ~SERIAL_DTR_BIT; } while (0)
 #define serial_dtr_set_pull_up() do { SERIAL_STATE_PORT_REG |= SERIAL_DTR_BIT; } while (0)

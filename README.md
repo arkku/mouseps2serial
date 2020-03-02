@@ -97,6 +97,16 @@ If only one of the two settings (`FORCE_PROTOCOL` and `FORCE_BAUD`) is given,
 the other one remains configurable via DIP switches. This allows installing
 one or two jumpers instead of 4 switches, for example.
 
+The DTR line is used to view the state of the serial port. With serial serial
+mice, the line is used to supply power to the mouse, and hence the mouse works
+only when the line is supplying the voltage. However, if you use a logic level
+serial port with this converter, the state may be inverted. Hence the setting
+`SERIAL_STATE_INVERTED`, which defaults to `1` (for on). You may configure it
+at compile time:
+
+    make clean
+    make SERIAL_STATE_INVERTED=0
+
 ## Installation
 
 Build with `make` (requires `avr-gcc`):

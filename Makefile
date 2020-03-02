@@ -27,6 +27,8 @@ EFUSE ?= FD
 FORCE_PROTOCOL ?=
 FORCE_BAUD ?=
 
+SERIAL_STATE_INVERTED ?= 1
+
 #### BURNER ###################################################################
 # Specify the burner on the command-line if you wish, e.g.,
 #	make burn BURNER=avrisp2 PORT=/dev/ttyUSB0 BPS=115200
@@ -39,7 +41,7 @@ BURNER ?= dragon_isp
 #BPS ?= 115200
 ###############################################################################
 CC=avr-gcc
-CFLAGS=-Wall -std=c11 -pedantic -Wextra -Wno-unused-parameter -Os $(AVR_FLAGS) -DFORCE_SERIAL_PROTOCOL=$(FORCE_PROTOCOL) -DFORCE_BAUD=$(FORCE_BAUD)
+CFLAGS=-Wall -std=c11 -pedantic -Wextra -Wno-unused-parameter -Os $(AVR_FLAGS) -DFORCE_SERIAL_PROTOCOL=$(FORCE_PROTOCOL) -DFORCE_BAUD=$(FORCE_BAUD) -DSERIAL_STATE_INVERTED=$(SERIAL_STATE_INVERTED)
 LDFLAGS=-Os $(AVR_FLAGS)
 AR=avr-ar
 ARFLAGS=rcs

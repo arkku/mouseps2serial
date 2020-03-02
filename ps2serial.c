@@ -131,6 +131,12 @@ enum mouse_protocol {
 #undef FORCE_BAUD
 #endif
 
+#if defined(SERIAL_STATE_INVERTED) && SERIAL_STATE_INVERTED != 0
+#define is_serial_powered()     (!serial_dtr_state())
+#else
+#define is_serial_powered()     serial_dtr_state()
+#endif
+
 #ifdef FORCE_SERIAL_PROTOCOL
 #define protocol ((enum mouse_protocol) (FORCE_SERIAL_PROTOCOL))
 #warning Serial protocol selection via DIP switches disabled (FORCE_SERIAL_PROTOCOL)
