@@ -1,8 +1,7 @@
 # PS/2 to Serial Mouse Converter
 
 A PS/2 mouse to serial converter using an ATmega328p (or similar)
-microcontroller. An Arduino with that microcontroller may also be used, but
-this converter uses no Arduino libraries.
+microcontroller. 
 
 The converter reads input from a PS/2 mouse (with support for wheel and 5
 buttons), and converts it to a serial mouse protocol. The supported protocols
@@ -18,13 +17,48 @@ or hard-coded using compile-time flags.
 
 ## Hardware
 
+There is a rough [schematic](schematic.pdf) available, but the actual device
+I have is currently built on protoboard slightly differently. An
+Arduino-compatible board may also be used, as very few additional components
+are needed (once you have a logic-level serial port available, for which you
+can use a breakout board).
+
+Note that a separate power supply is required, since the PC serial port has no
+reliable power source capable of powering both a PS/2 mouse and this converter.
+A PC should have plenty of 5 V sources available, however.
+
+### Bill of Materials
+
+* ATmega328p microcontroller
+* 22 Kohm resistor (pull-up for microcontroller RST#)
+* 14–16 MHz crystal oscillator and capacitors (e.g., 22 pF), or other clock
+  source
+* 2× 100 ohm resistor (optional, in series on PS/2 lines)
+* 2× 4.7–10 Kohm resistor (optional, external pull-up on PS/2 lines)
+* 100 nF decoupling capacitor (between V<sub>cc</sub> and GND, near
+  microcontroller)
+* 10 µF decoupling capacitor (between V<sub>cc</sub> and GND, optional)
+* PS/2 female connector
+* 2-pin header or connector for power input
+* pin header or connector for serial port
+* 2-pin header for DTR jumper (optional)
+* 4-position DIP switch (optional)
+* an LED and its current-limiting resistor (optional)
+* MAX232 for serial port level conversion, unless using a logic-level serial
+  port (or external converter) already
+    - 4× 1 µF capacitor for MAX232 charge pump
+    - 100 nF decoupling capacitor
+* ISP header for programming (optional)
+
+### Pins
+
 The default pin assignments are as follows:
 
 * PD2/INT0: PS/2 CLK
 * PD4: PS/2 DATA
-* PD0/RXD: Serial output (from computer to mouse, optional)
-* PD1/TXD: Serial input (to computer)
+* PD1/TXD: Serial data from mouse to computer
 * PD3: Serial DTR from computer (or tie to ground for always active)
+* PD0/RXD: Serial data from computer to mouse (optional)
 * PB5/SCK: Indicator LED (optional)
 * PC2: DIP switch 1 (optional)
 * PC3: DIP switch 2 (optional)
@@ -49,16 +83,18 @@ which is the classic PC serial mouse.
 (Obviously it is possible to use pin headers and jumpers instead of DIP
 switches, but switches are ideal.)
 
-PC serial ports use RS-232, which nominally have 12 V logic levels. This means
+PC serial ports use RS-232, which nominally have 12 V levels. This means
 that you **must not** connect the DTR or RXD directly to the microcontroller,
 or you will fry the pins! However, most PC serial ports will accept _input_ at
 5 V levels, so you may connect the TXD pin. The other two pins are actually
 optional, although mouse auto-detection/recognition will not work without
-DTR. For full serial port support, you can use a logic level to RS-232
-converter, such as a MAX232 chip.
+DTR (this only matters for the Microsoft protocol). For full serial port
+support, you can use a logic level to RS-232 converter, such as a MAX232 chip.
 
-The DTR defaults to active low, which means that if you do not connect it to an
-actual serial port DTR output, you should physically connect the pin to ground.
+The DTR defaults to active low, since the logic level serial port signals are
+generally inverted (e.g., by the MAX232). This also means that if you leave it
+unconnected, you must jumper the pin to ground or it will be pulled high
+(inactive) by the internal pull-up.
 
 If the indicator LED is installed, it obviously needs a current-limiting
 resistor in series.
@@ -142,9 +178,29 @@ with the default fuse settings.
 ## Operation
 
 Once configured, operation is pretty much automatic. The watchdog timer is used
-to recover from errors by resetting the device automatically after 4 seconds
-if something goes wrong. A reset may also be forced by sending an exclamation
-mark (`!`) over the serial port.
+to recover from errors by resetting the device automatically after a few
+seconds if something goes wrong. A reset may also be forced by sending an
+exclamation mark (`!`) over the serial port.
 
 The indicator LED (if installed) is lit when a PS/2 mouse is connected and
 blinks on activity.
+
+If the mouse driver does not recognize the mouse, it is probably because it
+expects to read an id character on DTR pulse, and the pulse isn't working (not
+connected, wrong polarity). If using the Microsoft wheel mouse protocol, the id
+character may not be recognized by the driver (try the regular Microsoft
+protocol to verify).
+
+In case of problems, also try the Mouse Systems protocol when possible, since
+it has no handshake requirement (the DTR can simply be jumpered permanently).
+
+Also try the debug mode at 9600 bps on the same serial port and view the data
+in a terminal program. Send a question mark `?` over the serial line to query
+the status if you see no movement. The status update shows the PS/2 mouse id
+(if it is N/A, the PS/2 mouse was not correctly recognized), as well as the DTR
+and DIP configuration status. (The DIP switches take effect only on reset, so
+you may test the correct operation of the switches in debug mode.)
+
+If you are using the serial mouse in DOS, also try booting without any extended
+or expanded memory (no `HIMEM.SYS` or `EMM386.EXE` or equivalent). Also try
+a different mouse driver.
