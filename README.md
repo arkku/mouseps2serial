@@ -58,7 +58,8 @@ The default pin assignments are as follows:
 * PD4: PS/2 DATA
 * PD1/TXD: Serial data from mouse to computer
 * PD3: Serial DTR from computer (or tie to ground for always active)
-* PD0/RXD: Serial data from computer to mouse (optional)
+* PD0/RXD: Serial data from computer to mouse (optional, tie high or low if
+  not connected)
 * PB5/SCK: Indicator LED (optional)
 * PC2: DIP switch 1 (optional)
 * PC3: DIP switch 2 (optional)
@@ -86,7 +87,8 @@ switches, but switches are ideal.)
 PC serial ports use RS-232, which nominally have 12 V levels. This means
 that you **must not** connect the DTR or RXD directly to the microcontroller,
 or you will fry the pins! However, most PC serial ports will accept _input_ at
-5 V levels, so you may connect the TXD pin. The other two pins are actually
+5 V levels, so you may be able to connect the TXD pin through as simple
+inverting buffer (such as a NOT gate). The other two pins are actually
 optional, although mouse auto-detection/recognition will not work without
 DTR (this only matters for the Microsoft protocol). For full serial port
 support, you can use a logic level to RS-232 converter, such as a MAX232 chip.
@@ -204,3 +206,30 @@ you may test the correct operation of the switches in debug mode.)
 If you are using the serial mouse in DOS, also try booting without any extended
 or expanded memory (no `HIMEM.SYS` or `EMM386.EXE` or equivalent). Also try
 a different mouse driver.
+
+## Speed Adjustment
+
+Since some of the newer PS/2 mouse have considerably higher resolution than
+classic serial mice, it is possible to reduce the resolution on the fly. This
+happens by simultaneously holding down all three main buttons (left, middle,
+right) and turning the wheel. Wheel up slows down the mouse (increases the
+divisor) and wheel down speeds it up.
+
+The setting can be persisted across restarts by pressing and then releasing
+the right button while holding down the middle button. 
+
+Obviously this requires the mouse to have a wheel, but I figure pre-wheel mice
+are probably not too fast in the first place. However, the divisor may also
+be set by sending the corresponding single-digit number over the serial port.
+It is also possible to define it at compile-time as follows:
+
+    make clean
+    make MOUSE_DIVISOR=2
+
+This compile-time setting disables the loading and saving of the setting, but
+still allows on-the-fly adjustment with the wheel.
+
+The setting `MOUSE_SCALING=1` can be used to enable scaling (kind of mouse
+acceleration) in the PS/2 mouse itself. Using the wheel or serial port input
+method to set the divisor to 0 also enables scaling with no divisor (i.e., the
+same as divisor 1 but with in-mouse scaling).

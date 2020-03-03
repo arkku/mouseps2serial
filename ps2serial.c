@@ -17,9 +17,7 @@
  * For RS-232 serial ports, technically the TX output should be at 12 V levels,
  * but the majority will accept 5 V straight from the microcontroller. However,
  * the DTR and RX (if used) inputs must be converted down to logic levels, such
- * as with a single MAX232 chip. Note that the dedicated mouse (and keyboard)
- * ports on Sun workstations do not need this conversion, as they use logic
- * levels already.
+ * as with a single MAX232 chip.
  *
  *      DIP settings:
  *
@@ -48,6 +46,12 @@
  * This option also enables output of the raw incoming PS/2 packets, whereas
  * the normal 9600 bps mode only shows the parsed output.
  *
+ * On the fly speed adjustment (to accommodate higher resolution PS/2 mice)
+ * can be done by holding down all three main buttons (left, right, middle)
+ * and turning the wheel (up increases divisor = slows down, down decreases
+ * divisor = speeds up). The setting can be persisted by holding down MMB
+ * and clicking RMB.
+ *
  * Copyright (c) 2020 Kimmo Kulovesi, https://arkku.dev/
  * Provided with absolutely no warranty, use at your own risk only.
  * Use and distribute freely, mark modified copies as such.
@@ -64,6 +68,7 @@
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <avr/eeprom.h>
 #include <avr/pgmspace.h>
 #include <avr/sleep.h>
 #include <avr/wdt.h>
@@ -154,13 +159,45 @@ static enum mouse_protocol protocol = PROTOCOL_MICROSOFT;
 static uint32_t baud = 1200UL;
 #endif
 
-static uint8_t mouse_resolution = PS2_RESOLUTION_4_MM;
+#if defined(MOUSE_DIVISOR) && (EXP(MOUSE_DIVISOR) == 1)
+#undef MOUSE_DIVISOR
+#endif
+#ifdef MOUSE_DIVISOR
+#warning Mouse divisor saving in EEPROM disabled (MOUSE_DIVISOR)
+#define MOUSE_DIVISOR_DEFAULT MOUSE_DIVISOR
+#ifndef DIVISOR_IN_EEPROM
+#define DIVISOR_IN_EEPROM 0
+#endif
+#endif
+
+#if defined(MOUSE_SCALING) && (EXP(MOUSE_SCALING) == 1)
+#undef MOUSE_SCALING
+#endif
+#ifndef MOUSE_SCALING
+#define MOUSE_SCALING 0
+#endif
+
+#ifndef MOUSE_DIVISOR_DEFAULT
+#define MOUSE_DIVISOR_DEFAULT 1
+#endif
+#ifndef MOUSE_DIVISOR_MAX
+#define MOUSE_DIVISOR_MAX 8
+#endif
+#define MOUSE_DIVISOR_MIN 0
+
+#if defined(DIVISOR_IN_EEPROM) && (EXP(DIVISOR_IN_EEPROM) == 1)
+#undef DIVISOR_IN_EEPROM
+#elif !defined(DIVISOR_IN_EEPROM)
+#define DIVISOR_IN_EEPROM 1
+#endif
+
+static uint8_t mouse_resolution = PS2_RESOLUTION_8_MM;
 
 static uint8_t mouse_rate = 40U;
 
 #define is_debug        (protocol == PROTOCOL_DEBUG)
 #define uart_mode       ((protocol <= PROTOCOL_MICROSOFT_WHEEL) ? UART_MODE_7N2 : UART_MODE_8N1)
-#define is_wheel_wanted ((USE_5_BUTTON_MODE && MAP_BUTTON_4_TO_MMB) || protocol == PROTOCOL_MICROSOFT_WHEEL || is_debug)
+#define is_wheel_wanted ((USE_5_BUTTON_MODE && MAP_BUTTON_4_TO_MMB) || (MOUSE_DIVISOR_MAX > 1) || protocol == PROTOCOL_MICROSOFT_WHEEL || is_debug)
 #define is_y_inverted   (protocol <= PROTOCOL_MICROSOFT_WHEEL)
 
 static uint8_t mouse_id = MOUSE_ID_NONE;
@@ -169,14 +206,21 @@ static int mouse_y = 0;
 static int mouse_z = 0;
 static uint8_t mouse_buttons = 0;
 static uint8_t last_sent_buttons = 0;
+static int_fast8_t mouse_divisor = MOUSE_DIVISOR_DEFAULT;
+
+#ifdef DIVISOR_IN_EEPROM
+static int_fast8_t mouse_divisor_saved = MOUSE_DIVISOR_DEFAULT;
+
+#define DIVISOR_ADDRESS (DIVISOR_IN_EEPROM - 1)
+#endif
 
 static bool error_handled = false;
 
-#define LMB_BIT ((uint8_t) (0x01U))
-#define RMB_BIT ((uint8_t) (0x02U))
-#define MMB_BIT ((uint8_t) (0x04U))
-#define B4_BIT  ((uint8_t) (0x10U))
-#define B5_BIT  ((uint8_t) (0x20U))
+#define LMB_BIT             ((uint8_t) (0x01U))
+#define RMB_BIT             ((uint8_t) (0x02U))
+#define MMB_BIT             ((uint8_t) (0x04U))
+#define MB4_BIT             ((uint8_t) (0x10U))
+#define MB5_BIT             ((uint8_t) (0x20U))
 
 #define is_lmb_pressed      ((mouse_buttons & LMB_BIT) != 0)
 #define is_rmb_pressed      ((mouse_buttons & RMB_BIT) != 0)
@@ -188,14 +232,10 @@ static bool error_handled = false;
 #define delta_y()           capped_to_int8(mouse_y)
 #define delta_z()           capped_to_int8(mouse_z)
 
-#define mouse_wheel         (mouse_id)
-#define ps2_mouse_packet_size ((uint8_t) (3U + (mouse_id == MOUSE_ID_PLAIN ? 0U : 1U)))
+#define mouse_has_wheel     (mouse_id >= MOUSE_ID_WHEEL && mouse_id <= MOUSE_ID_WHEEL5)
+#define ps2_mouse_packet_size ((uint8_t) (3U + (mouse_has_wheel ? 1U : 0U)))
 
 #define is_mouse_ready      (mouse_id != MOUSE_ID_NONE)
-
-#ifndef MOUSE_SCALING
-#define MOUSE_SCALING 0
-#endif
 
 static inline void
 mouse_reset_counters (void) {
@@ -215,6 +255,43 @@ mouse_reset_counters (void) {
 #define MOUSE_X_OVERFLOW_FLAG   ((uint8_t) (1U << 6))
 #define MOUSE_Y_OVERFLOW_FLAG   ((uint8_t) (1U << 7))
 
+static void
+eeprom_load (void) {
+#ifdef DIVISOR_IN_EEPROM
+    // Read the divisor from EEPROM
+    int byte = eeprom_read_byte(DIVISOR_ADDRESS);
+
+    if (byte >= MOUSE_DIVISOR_MIN && byte <= MOUSE_DIVISOR_MAX) {
+        mouse_divisor = byte;
+        mouse_divisor_saved = mouse_divisor;
+        if (is_debug) {
+            (void) fprintf_P(uart, PSTR("Loaded divisor: %d\r\n"), (int) mouse_divisor);
+        }
+    } else {
+        mouse_divisor = MOUSE_DIVISOR_DEFAULT;
+        mouse_divisor_saved = 0;
+        if (is_debug) {
+            (void) fprintf_P(uart, PSTR("Invalid divisor: %d\r\n"), (int) byte);
+        }
+    }
+#endif
+}
+
+static void
+eeprom_save (void) {
+    led_toggle();
+
+#ifdef DIVISOR_IN_EEPROM
+    if (mouse_divisor_saved != mouse_divisor) {
+        mouse_divisor_saved = mouse_divisor;
+        eeprom_update_byte(DIVISOR_ADDRESS, mouse_divisor_saved);
+        if (is_debug) {
+            (void) fprintf_P(uart, PSTR("Saved divisor: %d\r\n"), (int) mouse_divisor_saved);
+        }
+    }
+#endif
+}
+
 static int
 mouse_recv_byte (void) {
     int attempts_remaining = 100;
@@ -227,6 +304,21 @@ mouse_recv_byte (void) {
     return byte;
 }
 
+static void
+mouse_set_scaling (void) {
+    wdt_reset();
+
+    const bool enable_scaling = (mouse_divisor == 0) || MOUSE_SCALING;
+    if (!ps2_command_ack(enable_scaling ? PS2_COMMAND_ENABLE_SCALING : PS2_COMMAND_DISABLE_SCALING) && !ps2_is_ok()) {
+        if (is_debug) {
+            (void) fprintf_P(uart, PSTR("scaling err: %c\r\n"), ps2_last_error());
+        }
+        ps2_enable();
+    } else if (is_debug) {
+        (void) fprintf_P(uart, PSTR("scaling: %d\r\n"), enable_scaling ? 1 : 0);
+    }
+}
+
 static bool
 mouse_input (void) {
     bool have_changes = false;
@@ -235,7 +327,7 @@ mouse_input (void) {
         const uint8_t flags = (uint8_t) ps2_get_byte();
         int x = (int) ps2_get_byte();
         int y = (int) ps2_get_byte();
-        uint8_t zb = (mouse_wheel ? (uint8_t) ps2_get_byte() : 0U);
+        uint8_t zb = (mouse_has_wheel ? (uint8_t) ps2_get_byte() : 0U);
 
         if (flags & MOUSE_X_SIGN_FLAG) {
             x -= 256;
@@ -247,7 +339,7 @@ mouse_input (void) {
         if (is_debug) {
             if (baud > 9600UL) {
                 (void) fprintf_P(uart, PSTR("[%02X %02X %02X"), (unsigned) flags, (unsigned) x, (unsigned) y);
-                if (mouse_wheel) {
+                if (mouse_has_wheel) {
                     (void) fprintf_P(uart, PSTR(" %02X"), (unsigned) zb);
                 }
                 uart_puts_P(PSTR("]\r\n"));
@@ -281,23 +373,49 @@ mouse_input (void) {
         uint8_t buttons = flags & MOUSE_BUTTONS_MASK;
 
         if (zb) {
-            if (mouse_wheel == MOUSE_ID_WHEEL5) {
+            if (mouse_id == MOUSE_ID_WHEEL5) {
                 buttons |= (uint8_t) (zb & 0x30U);
 #if defined(MAP_BUTTON_4_TO_MMB) && MAP_BUTTON_4_TO_MMB != 0
-                buttons |= (buttons & B4_BIT) ? MMB_BIT : 0U;
+                buttons |= (buttons & MB4_BIT) ? MMB_BIT : 0U;
 #endif
             }
 
             zb &= 0x0FU;
-            if (zb & 0x04U) {
+            if (zb & 0x08U) {
                 // Extend the sign
                 zb |= 0xF0U;
             }
 
             mouse_z += (int8_t) zb;
+
+#if MOUSE_DIVISOR_MAX > 1
+            if ((buttons & MMB_BIT) && (buttons & RMB_BIT) && (buttons & LMB_BIT)) {
+                // Hold all buttons while moving wheel to adjust speed
+                if (zb & 0x08U) {
+                    // Wheel moved up
+                    if (mouse_divisor < MOUSE_DIVISOR_MAX) {
+                        if (mouse_divisor++ == 0) {
+                            mouse_set_scaling();
+                        }
+                    }
+                } else if (mouse_divisor >= 1) {
+                    if (--mouse_divisor == 0) {
+                        mouse_set_scaling();
+                    }
+                }
+
+                if (is_debug) {
+                    (void) fprintf_P(uart, PSTR("Divisor: %d\r\n"), (int) mouse_divisor);
+                }
+            }
+#endif
         }
 
         if (buttons != mouse_buttons) {
+            if ((mouse_buttons & (MMB_BIT | RMB_BIT)) && (buttons & MMB_BIT) && !(buttons & (RMB_BIT | LMB_BIT))) {
+                // Click RMB while holding down (only) MMB to persist settings
+                eeprom_save();
+            }
             mouse_buttons = buttons;
 
             // Force an update to be sent on button change, so quick presses
@@ -343,6 +461,8 @@ mouse_send_microsoft_state (const bool has_wheel, const int dx, const int dy, co
     uart_putc(y);
 
     if (has_wheel && (dz || is_mmb_pressed || (last_sent_buttons & MMB_BIT))) {
+        // The extra byte is sent only on wheel movement or MMB change
+
         byte = (uint8_t) dz;
         byte &= 0x0FU;
         byte |= is_mmb_pressed ? (1U << 5) : 0U;
@@ -369,6 +489,32 @@ mouse_send_sun_state (const int dx, const int dy) {
 }
 
 static void
+mouse_scale_deltas (int *scaled_x, int *scaled_y) {
+    int dx, dy;
+    
+    if (!(mouse_divisor & ~1)) {
+        dx = delta_x();
+        dy = delta_y();
+        *scaled_x = dx;
+        *scaled_y = dy;
+    } else {
+        dx = mouse_x / mouse_divisor;
+        mouse_x -= mouse_x % mouse_divisor;
+        dy = mouse_y / mouse_divisor;
+        mouse_y -= mouse_y % mouse_divisor;
+        dx = capped_to_int8(dx);
+        *scaled_x = dx;
+        dy = capped_to_int8(dy);
+        *scaled_y = dy;
+        dx *= mouse_divisor;
+        dy *= mouse_divisor;
+    }
+
+    mouse_x -= dx;
+    mouse_y -= dy;
+}
+
+static void
 mouse_send_to_serial (void) {
 #if defined(REQUIRE_DTR_HIGH_TO_OPERATE) && REQUIRE_DTR_HIGH_TO_OPERATE != 0
     if (!serial_enabled) {
@@ -377,12 +523,10 @@ mouse_send_to_serial (void) {
     }
 #endif
 
-    int dx = delta_x();
-    int dy = delta_y();
-    int dz = delta_z();
+    int dx, dy, dz;
 
-    mouse_x -= dx;
-    mouse_y -= dy;
+    mouse_scale_deltas(&dx, &dy);
+    dz = delta_z();
     mouse_z -= dz;
 
     switch (protocol) {
@@ -411,10 +555,7 @@ mouse_send_to_serial (void) {
     if (protocol == PROTOCOL_MOUSE_SYSTEMS || is_debug) {
         (void) mouse_input();
 
-        dx = delta_x();
-        dy = delta_y();
-        mouse_x -= dx;
-        mouse_y -= dy;
+        mouse_scale_deltas(&dx, &dy);
 
         if (protocol == PROTOCOL_MOUSE_SYSTEMS) {
             mouse_send_sun_motions(dx, dy);
@@ -448,8 +589,10 @@ read_mouse_id (void) {
         case MOUSE_ID_TRACKBALL:
         case MOUSE_ID_4DMOUSE:
         case MOUSE_ID_TYPHOON:
-            // Not worth supporting but is probably compatible with plain mouse
-            mouse_id = MOUSE_ID_PLAIN;
+            // Not really supported, but recognized as valid
+            // (I don't have these devices, but I would expect them to return
+            //  id 0 by default anyway without the magic sequences to init.)
+            mouse_id = byte;
             return true;
 
         case EOF:
@@ -526,7 +669,7 @@ mouse_init (const bool do_reset) {
     mouse_buttons = 0;
     mouse_reset_counters();
 
-    if (mouse_id == MOUSE_ID_PLAIN && is_wheel_wanted) {
+    if (!mouse_has_wheel && is_wheel_wanted) {
         // Magic sequence to enable the mouse wheel (if present)
 
         if (ps2_command_arg_ack(PS2_COMMAND_SET_RATE, 200)
@@ -566,18 +709,7 @@ mouse_init (const bool do_reset) {
     }
 #endif // USE_5_BUTTON_MODE
 
-    wdt_reset();
-#if defined(MOUSE_SCALING) && MOUSE_SCALING != 0
-    byte = PS2_COMMAND_ENABLE_SCALING;
-#else
-    byte = PS2_COMMAND_DISABLE_SCALING;
-#endif
-    if (!ps2_command_ack(byte) && !ps2_is_ok()) {
-        if (is_debug) {
-            (void) fprintf_P(uart, PSTR("scaling err: %c\r\n"), ps2_last_error());
-        }
-        ps2_enable();
-    }
+    mouse_set_scaling();
 
     wdt_reset();
     if (!ps2_command_arg_ack(PS2_COMMAND_SET_RESOLUTION, mouse_resolution) && !ps2_is_ok()) {
@@ -699,6 +831,9 @@ dip_send_state (void) {
 
 static void
 setup (const bool is_power_up) {
+    int byte;
+    int_fast8_t attempts_remaining;
+
     // Use the watchdog timer to recover from error states
     wdt_reset();
     wdt_enable(WDTO_4S);
@@ -728,11 +863,11 @@ setup (const bool is_power_up) {
     serial_dtr_int_on_change();
     serial_dtr_enable_interrupt();
 
+    // Load settings
+    eeprom_load();
+
     // Enable interrupts
     sei();
-
-    int byte;
-    int_fast8_t attempts_remaining;
 
     if (is_power_up) {
         if (is_debug) {
@@ -791,10 +926,10 @@ mouse_send_id (void) {
         break;
 
     case PROTOCOL_MICROSOFT_WHEEL:
-        if (mouse_id == MOUSE_ID_PLAIN) {
-            uart_putc('3');
-        } else {
+        if (mouse_has_wheel) {
             uart_putc('Z');
+        } else {
+            uart_putc('3');
         }
         break;
 
@@ -809,7 +944,7 @@ mouse_send_id (void) {
         } else {
             (void) uart_puts_P(PSTR("N/A"));
         }
-        (void) fprintf_P(uart, PSTR(", DTR: %d, "), (serial_enabled ? 1 : 0));
+        (void) fprintf_P(uart, PSTR(", Divisor: %d, DTR: %d, "), (int) mouse_divisor, (serial_enabled ? 1 : 0));
         dip_send_state();
         break;
     }
@@ -836,7 +971,7 @@ main (void) {
         }
 
         if (uart_bytes_available()) {
-            const int input = uart_getc();
+            int input = uart_getc();
 
             wdt_reset();
 
@@ -844,13 +979,28 @@ main (void) {
             case '?':
                 mouse_send_id();
                 break;
+
             case '!':
             case '\0':
             case EOF:
                 setup(false);
                 uart_flush_unread();
                 break;
+
             default:
+#ifndef MOUSE_DIVISOR
+                if (input >= '0' && input <= '9') {
+                    input -= '0';
+                    if (input >= MOUSE_DIVISOR_MIN && input <= MOUSE_DIVISOR_MAX && input != mouse_divisor) {
+                        led_toggle();
+                        mouse_divisor = input;
+                        mouse_set_scaling();
+                        if (is_debug) {
+                            mouse_send_id();
+                        }
+                    }
+                }
+#endif
                 break;
             }
         }
