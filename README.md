@@ -7,11 +7,14 @@ The converter reads input from a PS/2 mouse (with support for wheel and 5
 buttons), and converts it to a serial mouse protocol. The supported protocols
 include Microsoft (the classic PC serial mouse), with optional wheel and third
 button support, Mouse Systems, and Sun Microsystems (which is a variant of the
-Mouse Systems protocol used). Additionally there is a debug mode, which outputs
+Mouse Systems protocol). Additionally there is a debug mode, which outputs
 human-readable text.
 
 The protocol and serial port speed may be configured either by 4 DIP switches,
-or hard-coded using compile-time flags.
+or hard-coded using compile-time flags. When a "modern" wheel mouse is used,
+holding down all buttons and while turning the wheel allows adjusting the mouse
+resolution. The speed setting may be persisted across restarts by clicking the
+right mouse button while holding down the middle button.
 
 ~ [Kimmo Kulovesi](https://arkku.dev/), 2020-03-01
 
@@ -30,11 +33,11 @@ A PC should have plenty of 5 V sources available, however.
 ### Bill of Materials
 
 * ATmega328p microcontroller
-* 22 Kohm resistor (pull-up for microcontroller RST#)
+* 22 KΩ resistor (pull-up for microcontroller RST#)
 * 14–16 MHz crystal oscillator and capacitors (e.g., 22 pF), or other clock
   source
-* 2× 100 ohm resistor (optional, in series on PS/2 lines)
-* 2× 4.7–10 Kohm resistor (optional, external pull-up on PS/2 lines)
+* 2× 100 Ω resistor (optional, in series on PS/2 lines)
+* 2× 4.7–10 KΩ resistor (optional, external pull-up on PS/2 lines)
 * 100 nF decoupling capacitor (between V<sub>cc</sub> and GND, near
   microcontroller)
 * 10 µF decoupling capacitor (between V<sub>cc</sub> and GND, optional)
