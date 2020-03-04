@@ -31,6 +31,8 @@ MOUSE_SCALING ?=
 
 SERIAL_STATE_INVERTED ?= 1
 
+PS2_BUFFER_SIZE ?= 256
+
 #### BURNER ###################################################################
 # Specify the burner on the command-line if you wish, e.g.,
 #	make burn BURNER=avrisp2 PORT=/dev/ttyUSB0 BPS=115200
@@ -52,7 +54,7 @@ AVRDUDE=avrdude
 
 AVR_FLAGS=-mmcu=$(MCU) -DF_CPU=$(F_CPU)
 
-CONFIG_FLAGS=-DKK_UART_TRANSMIT_BUFFER_SIZE=0 -DKK_UART_RECEIVE_BUFFER_SIZE=32 -DBAUD=$(BAUD) -DFORCE_SERIAL_PROTOCOL=$(FORCE_PROTOCOL) -DFORCE_BAUD=$(FORCE_BAUD) -DSERIAL_STATE_INVERTED=$(SERIAL_STATE_INVERTED) -DMOUSE_DIVISOR=$(MOUSE_DIVISOR) -DMOUSE_SCALING=$(MOUSE_SCALING)
+CONFIG_FLAGS=-DKK_UART_TRANSMIT_BUFFER_SIZE=0 -DKK_UART_RECEIVE_BUFFER_SIZE=32 -DKK_PS2_BUFFER_SIZE=$(PS2_BUFFER_SIZE) -DBAUD=$(BAUD) -DFORCE_SERIAL_PROTOCOL=$(FORCE_PROTOCOL) -DFORCE_BAUD=$(FORCE_BAUD) -DSERIAL_STATE_INVERTED=$(SERIAL_STATE_INVERTED) -DMOUSE_DIVISOR=$(MOUSE_DIVISOR) -DMOUSE_SCALING=$(MOUSE_SCALING)
 
 HEX=ps2serial.hex
 BIN=ps2serial.elf
@@ -61,7 +63,7 @@ BOOTLOADER=optiboot_atmega328.hex
 
 all: $(HEX)
 
-ps2serial.o: kk_uart.h kk_ps2.h led.h dip.h dtr.h
+ps2serial.o: kk_uart.h kk_ps2.h flowctl.h led.h dip.h
 kk_uart.o: kk_uart.h
 kk_ps2.o: kk_ps2.h
 $(OBJS): Makefile

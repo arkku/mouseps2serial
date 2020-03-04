@@ -118,7 +118,7 @@ static volatile uint8_t ps2_buffer_head = 0;
 #define buffer_size ((unsigned int) (sizeof ps2_buffer))
 
 #if KK_PS2_BUFFER_SIZE == 256
-#define module_buffer_size(x) ((uint8_t) (x))
+#define modulo_buffer_size(x) ((uint8_t) (x))
 #elif KK_PS2_BUFFER_SIZE > 256
 #error KK_PS2_BUFFER_SIZE too large (max. 256)!
 #else

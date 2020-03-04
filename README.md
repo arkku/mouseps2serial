@@ -44,7 +44,7 @@ A PC should have plenty of 5 V sources available, however.
 * PS/2 female connector
 * 2-pin header or connector for power input
 * pin header or connector for serial port
-* 2-pin header for DTR jumper (optional)
+* 3-pin header for RTS jumper (optional)
 * 4-position DIP switch (optional)
 * an LED and its current-limiting resistor (optional)
 * MAX232 for serial port level conversion, unless using a logic-level serial
@@ -60,7 +60,7 @@ The default pin assignments are as follows:
 * PD2/INT0: PS/2 CLK
 * PD4: PS/2 DATA
 * PD1/TXD: Serial data from mouse to computer
-* PD3: Serial DTR from computer (or tie to ground for always active)
+* PD3: Serial RTS from computer (or tie to ground for always active)
 * PD0/RXD: Serial data from computer to mouse (optional, tie high or low if
   not connected)
 * PB5/SCK: Indicator LED (optional)
@@ -88,18 +88,23 @@ which is the classic PC serial mouse.
 switches, but switches are ideal.)
 
 PC serial ports use RS-232, which nominally have 12 V levels. This means
-that you **must not** connect the DTR or RXD directly to the microcontroller,
+that you **must not** connect the RTS or RXD directly to the microcontroller,
 or you will fry the pins! However, most PC serial ports will accept _input_ at
 5 V levels, so you may be able to connect the TXD pin through as simple
 inverting buffer (such as a NOT gate). The other two pins are actually
 optional, although mouse auto-detection/recognition will not work without
-DTR (this only matters for the Microsoft protocol). For full serial port
+RTS (this only matters for the Microsoft protocol). For full serial port
 support, you can use a logic level to RS-232 converter, such as a MAX232 chip.
 
-The DTR defaults to active low, since the logic level serial port signals are
+The RTS defaults to active low, since the logic level serial port signals are
 generally inverted (e.g., by the MAX232). This also means that if you leave it
 unconnected, you must jumper the pin to ground or it will be pulled high
 (inactive) by the internal pull-up.
+
+While the Microsoft driver pulses RTS to have the mouse identify itself, it
+might be that some other drivers pulse DTR instead. In this case, connect the
+RTS from the serial port (pin 7 on the DE-9 connector) to DTR instead
+(pin 4 on the DE-9 connector).
 
 If the indicator LED is installed, it obviously needs a current-limiting
 resistor in series.
@@ -127,21 +132,21 @@ actually selects a compile-time determined bps, which defaults to 115200 bps
 Alternatively, the settings may be hard-coded at compile time as follows:
 
     make clean
-    make FORCE_PROTOCOL=1 FORCE_BAUD=1200
+    make FORCE_PROTOCOL=PROTOCOL_MICROSOFT FORCE_BAUD=1200
 
-The number after `FORCE_PROTOCOL` is one of:
+The protocol after `FORCE_PROTOCOL` is one of:
 
-    0 Microsoft protocol
-    1 Microsoft protocol with wheel
-    2 Mouse Systems protocol
-    3 Sun Microsystems protocol
-    4 Debug output
+* `PROTOCOL_MICROSOFT`
+* `PROTOCOL_MICROSOFT_WHEEL`
+* `PROTOCOL_MOUSE_SYSTEMS`
+* `PROTOCOL_SUN`
+* `PROTOCOL_DEBUG`
 
 If only one of the two settings (`FORCE_PROTOCOL` and `FORCE_BAUD`) is given,
 the other one remains configurable via DIP switches. This allows installing
 one or two jumpers instead of 4 switches, for example.
 
-The DTR line is used to view the state of the serial port. With serial serial
+The RTS line is used to view the state of the serial port. With serial serial
 mice, the line is used to supply power to the mouse, and hence the mouse works
 only when the line is supplying the voltage. However, if you use a logic level
 serial port with this converter, the state is typically inverted, which is why
@@ -151,7 +156,7 @@ the default is active low. This may be changed with the setting
     make clean
     make SERIAL_STATE_INVERTED=0
 
-Note that the internal pull-up on the DTR pin means the default state is high,
+Note that the internal pull-up on the RTS pin means the default state is high,
 i.e., not active when inverted and active when inverted. With the default,
 inverted, setting you should physically tie the pin to ground if it is unused,
 but with the non-inverted setting it may be simply left unconnected.
@@ -191,18 +196,18 @@ The indicator LED (if installed) is lit when a PS/2 mouse is connected and
 blinks on activity.
 
 If the mouse driver does not recognize the mouse, it is probably because it
-expects to read an id character on DTR pulse, and the pulse isn't working (not
+expects to read an id character on RTS pulse, and the pulse isn't working (not
 connected, wrong polarity). If using the Microsoft wheel mouse protocol, the id
 character may not be recognized by the driver (try the regular Microsoft
 protocol to verify).
 
 In case of problems, also try the Mouse Systems protocol when possible, since
-it has no handshake requirement (the DTR can simply be jumpered permanently).
+it has no handshake requirement (the RTS can simply be jumpered permanently).
 
 Also try the debug mode at 9600 bps on the same serial port and view the data
 in a terminal program. Send a question mark `?` over the serial line to query
 the status if you see no movement. The status update shows the PS/2 mouse id
-(if it is N/A, the PS/2 mouse was not correctly recognized), as well as the DTR
+(if it is N/A, the PS/2 mouse was not correctly recognized), as well as the RTS
 and DIP configuration status. (The DIP switches take effect only on reset, so
 you may test the correct operation of the switches in debug mode.)
 
