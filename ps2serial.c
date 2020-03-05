@@ -113,31 +113,67 @@ ISR (SERIAL_FLOW_INT_VECTOR, ISR_NOBLOCK) {
     serial_state_changed = true;
 }
 
-#define MOUSE_ID_NONE       ((uint8_t) 0xFFU)
-#define MOUSE_ID_PLAIN      ((uint8_t) 0x00U)
-#define MOUSE_ID_TRACKBALL  ((uint8_t) 0x02U)
-#define MOUSE_ID_WHEEL      ((uint8_t) 0x03U)
-#define MOUSE_ID_WHEEL5     ((uint8_t) 0x04U)
-#define MOUSE_ID_4DMOUSE    ((uint8_t) 0x06U)
-#define MOUSE_ID_TYPHOON    ((uint8_t) 0x08U)
+enum mouse_id {
+    MOUSE_ID_NONE       = 0xFFU,
 
-enum mouse_protocol {
-    PROTOCOL_DEBUG              = 0x00,
-    PROTOCOL_MICROSOFT_WHEEL    = 0x01,
-    PROTOCOL_MICROSOFT          = 0x02,
-    PROTOCOL_MOUSE_SYSTEMS      = 0x04,
-    PROTOCOL_SUN                = 0x0C
+    /// Regular mouse
+    MOUSE_ID_PLAIN      = 0U,
+
+    /// Trackball (untested)
+    MOUSE_ID_TRACKBALL  = 2U,
+
+    /// Mouse with wheel (activated by magic sequence of rate configuration)
+    MOUSE_ID_WHEEL      = 3U,
+
+    /// Mouse with wheel and 5 buttos (activated by magic sequence)
+    MOUSE_ID_WHEEL5     = 4U,
+
+    // ?
+    MOUSE_ID_4DMOUSE    = 6U,
+
+    /// Apparently an alternative implementation of the wheel that is fully
+    /// compatible with the plain protocol. This converter does not support
+    /// reading the wheel since I have never even seen such a mouse, but we
+    /// accept the id as valid to work in the plain mouse mode.
+    MOUSE_ID_TYPHOON    = 8U
 };
 
-#define is_microsoft        ((protocol & 3) != 0)
+// Even numbers: mouse wheel supported
+// Bit 1 (0x02) set: Microsoft (7N1, inverted Y axis)
+enum mouse_protocol {
+    PROTOCOL_DEBUG              = 0x00,
+    PROTOCOL_MOUSE_SYSTEMS      = 0x01,
+    PROTOCOL_MICROSOFT_WHEEL    = 0x02,
+    PROTOCOL_MICROSOFT          = 0x03,
+    PROTOCOL_SUN                = 0x05
+};
+
+// Does the protocol support a wheel?
+#define protocol_has_wheel  (!(protocol & 1))
+
+/// Is the protocol a Microsoft protocol?
+#define is_microsoft        ((protocol & 2))
+
+/// Is the protocol the debug output?
 #define is_debug            (protocol == PROTOCOL_DEBUG)
-#define protocol_has_delta  (is_debug || protocol == PROTOCOL_MOUSE_SYSTEMS)
-#define protocol_has_wheel  (protocol <= PROTOCOL_MICROSOFT_WHEEL)
 
+// Does the protocol have a separate movement delta for each packet?
+#define protocol_has_delta  (protocol <= PROTOCOL_MOUSE_SYSTEMS)
+
+// Is the Y axis inverted by comparison to the PS/2 protocol? The PS/2 protocol
+// has positive values going up, so inverted has negative values going up. This
+// is the case with the Microsoft protocol.
 #define is_y_inverted       (is_microsoft)
-#define uart_mode           (is_microsoft ? UART_MODE_7N2 : UART_MODE_8N1)
-#define is_wheel_wanted     ((USE_5_BUTTON_MODE && MAP_BUTTON_4_TO_MMB) || (MOUSE_DIVISOR_MAX > 1) || protocol_has_wheel)
 
+// The Microsoft protocol is nominally 7N1 while others are 8N1, however, we
+// use 7N2 instead of 7N1 because it can be received as both 7N1 and 8N1. This
+// costs 1 bit per byte transmit time, but we probably lose more anyway while
+// preparing the next packet.
+#define uart_mode           (is_microsoft ? UART_MODE_7N2 : UART_MODE_8N1)
+
+// Should the wheel be enabled in the PS/2 mouse? Generally yes, since it is
+// used for on-the-fly speed adjustment.
+#define is_wheel_wanted     ((USE_5_BUTTON_MODE && MAP_BUTTON_4_TO_MMB) || (MOUSE_DIVISOR_MAX > 1) || protocol_has_wheel)
 
 #define EXP_(x) x##1
 #define EXP(x) EXP_(x)
@@ -159,7 +195,7 @@ enum mouse_protocol {
 #define protocol ((enum mouse_protocol) (FORCE_SERIAL_PROTOCOL))
 #warning Serial protocol selection via DIP switches disabled (FORCE_SERIAL_PROTOCOL)
 #else
-static enum mouse_protocol protocol = PROTOCOL_MICROSOFT;
+static uint8_t protocol = PROTOCOL_MICROSOFT;
 #endif
 
 #ifdef FORCE_BAUD
@@ -231,7 +267,9 @@ static bool error_handled = false;
 #define is_rmb_pressed      ((mouse_buttons & RMB_BIT) != 0)
 #define is_mmb_pressed      ((mouse_buttons & MMB_BIT) != 0)
 
-#define capped_to_int8(x)   (((x) > 127) ? 127 : (((x) < -128) ? -128 : (x)))
+// Note: Omit -128 even though it is a permitted value: it may cause problems
+// with some drivers using the pattern 0x80 to synchronize
+#define capped_to_int8(x)   (((x) > 127) ? 127 : (((x) < -127) ? -127 : (x)))
 #define capped_to_int4(x)   (((x) > 7) ? 7 : (((x) < -8) ? -8 : (x)))
 
 #define delta_x()           capped_to_int8(mouse_x)
@@ -486,7 +524,7 @@ mouse_send_microsoft_state (const bool has_wheel, const int dx, const int dy, co
 
         byte = (uint8_t) dz;
         byte &= 0x0FU;
-        byte |= is_mmb_pressed ? (1U << 5) : 0U;
+        byte |= is_mmb_pressed ? 0x10U : 0U;
         uart_putc(byte);
     } else if (is_mmb_pressed != last_had_mmb) {
         // Toggle MMB by repeating state (old, non-wheel protocol only,
@@ -999,12 +1037,7 @@ mouse_send_id (void) {
 
     case PROTOCOL_MICROSOFT_WHEEL:
         uart_putc('M');
-        if (mouse_has_wheel) {
-            uart_putc('Z');
-        } else {
-            // Logitech 3-button protocol (compatible when there is no wheel)
-            uart_putc('3');
-        }
+        uart_putc('Z');
         break;
 
     case PROTOCOL_DEBUG: {
@@ -1055,6 +1088,7 @@ main (void) {
                 break;
 
             case '!':
+            case '*':
             case '\0':
             case EOF:
                 setup(false);
