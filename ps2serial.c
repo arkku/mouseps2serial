@@ -80,6 +80,7 @@
 #include "dip.h"
 #include "flowctl.h"
 #include "led.h"
+#include "timer.h"
 
 #ifndef USE_5_BUTTON_MODE
 // Set this to 1 to enable 5-button mode in the PS/2 mouse.
@@ -249,6 +250,23 @@ static uint8_t mouse_buttons = 0;
 static uint8_t last_sent_buttons = 0;
 static int_fast8_t mouse_divisor = MOUSE_DIVISOR_DEFAULT;
 
+#ifndef MAX_ERROR_COUNT
+/// The maximum number of mouse protocol errors before we will try to reset the
+/// mouse. Repeated errors may indicate that we are out of sync.
+#define MAX_ERROR_COUNT 2
+#endif
+
+static uint8_t mouse_error_count = 0;
+
+static volatile uint8_t mouse_idle_10ms_count = 0;
+
+/// Maximum number of 10 ms ticks (i.e., hundreths of a second) the mouse can
+/// idle before we try to ping it.
+#define MAX_IDLE_10MS       250U
+
+#define TICKS_PER_SECOND    (F_CPU / 1024UL)
+#define TICKS_PER_10MS      ((TICKS_PER_SECOND / 100UL) + (((TICKS_PER_SECOND % 100UL) >= 50UL) ? 1UL : 0UL))
+
 #ifdef DIVISOR_IN_EEPROM
 static int_fast8_t mouse_divisor_saved = MOUSE_DIVISOR_DEFAULT;
 
@@ -298,6 +316,32 @@ mouse_reset_counters (void) {
 #define MOUSE_Y_SIGN_FLAG       ((uint8_t) (1U << 5))
 #define MOUSE_X_OVERFLOW_FLAG   ((uint8_t) (1U << 6))
 #define MOUSE_Y_OVERFLOW_FLAG   ((uint8_t) (1U << 7))
+
+// This fires approx. once per 10 ms, i.e., 100 times second
+ISR (TIMER_COMPA_VECTOR) {
+    if (mouse_idle_10ms_count != 255U) {
+        ++mouse_idle_10ms_count;
+    }
+}
+
+static void
+mouse_idle_reset (void) {
+    timer_reset_counter();
+    mouse_idle_10ms_count = 0;
+}
+
+static void
+mouse_idle_start_counter (void) {
+    timer_disable();
+
+    timer_set_prescaler_1024();
+    mouse_idle_reset();
+
+    TIMER_OCRA = TICKS_PER_10MS;
+    timer_set_ctc_mode();
+
+    timer_enable_compa();
+}
 
 static void
 eeprom_load (void) {
@@ -367,7 +411,13 @@ static bool
 mouse_input (void) {
     bool have_changes = false;
 
-    wdt_reset();
+    if (!ps2_bytes_available()) {
+        // Allow indefinite idle without triggering the watchdog, but require
+        // valid input if not idle (i.e., don't hang on partial input forever)
+        wdt_reset();
+
+        return false;
+    }
 
     while (ps2_bytes_available() >= ps2_mouse_packet_size) {
         const uint8_t flags = (uint8_t) ps2_get_byte();
@@ -397,15 +447,27 @@ mouse_input (void) {
             }
         }
 
-        if (!(flags & MOUSE_ALWAYS_1_FLAG)) {
-            // Invalid packet, ignore it
+        if (!(flags & MOUSE_ALWAYS_1_FLAG) ||
+            ((flags & MOUSE_X_OVERFLOW_FLAG) && !(x == -256 || x == 255)) ||
+            ((flags & MOUSE_Y_OVERFLOW_FLAG) && !(y == -256 || y == 255))) {
+            // Invalid packet or weird overflow, ignore it
             if (is_debug) {
                 (void) fprintf_P(uart, PSTR("Invalid flags: %02X\r\n"), (unsigned) flags);
             }
-            continue;
+
+            // Repeated errors will cause a mouse reset
+            ++mouse_error_count;
+
+            if (flags == PS2_REPLY_TEST_PASSED && x == 0) {
+                // Did the mouse reboot? Force a reset immediately.
+                mouse_error_count += MAX_ERROR_COUNT;
+            }
+
+            return false;
         }
 
         wdt_reset();
+        mouse_idle_reset();
 
         have_changes = true;
 
@@ -718,6 +780,17 @@ mouse_init (const bool do_reset) {
                     (void) fprintf_P(uart, PSTR("eset failed: %02X\r\n"), (unsigned) byte);
                 }
             }
+
+            if (byte == PS2_REPLY_TEST_PASSED) {
+                // Maybe the device actually reset just now, let's see
+                byte = ps2_recv_timeout(100);
+                if (byte == 0x00U) {
+                    // Yes, it's probably only just powering up, let's retry
+                    return mouse_init(true);
+                } else if (is_debug) {
+                    (void) fprintf_P(uart, PSTR("Received: %02X\r\n"), (unsigned) byte);
+                }
+            }
             return false;
         }
 
@@ -811,6 +884,10 @@ mouse_init (const bool do_reset) {
         if (is_debug) {
             uart_puts_P(PSTR("Init success\r\n"));
         }
+
+        mouse_error_count = 0;
+        mouse_idle_start_counter();
+
         return true;
     } else {
         if (is_debug && !ps2_is_ok()) {
@@ -976,6 +1053,8 @@ setup (const bool is_power_up) {
         PORTD |= ~(DDRD | 3U);
     }
 
+    timer_disable();
+
     // Enable interrupts
     sei();
 
@@ -983,6 +1062,8 @@ setup (const bool is_power_up) {
         if (is_debug) {
             uart_putc('!');
         }
+
+        _delay_ms(100);
 
         // Read any bytes sent by the mouse on power-up
         byte = mouse_recv_byte();
@@ -993,8 +1074,6 @@ setup (const bool is_power_up) {
             if (is_debug) {
                 (void) fprintf_P(uart, PSTR("Power-up: %02X\r\n"), (unsigned) byte);
             }
-
-            _delay_ms(100);
 
             // Try to init the mouse without resetting (got power-up message)
             if (mouse_init(false) && is_debug) {
@@ -1138,6 +1217,25 @@ main (void) {
             } while (mouse_input() && !serial_state_changed);
 
             led_set(1);
+
+            if (mouse_error_count > MAX_ERROR_COUNT) {
+                // Try to re-synchronize if we are getting errors
+                if (is_debug) {
+                    uart_puts_P(PSTR("Reset due to errors\r\n"));
+                }
+                setup(false);
+            }
+
+            if (mouse_idle_10ms_count > MAX_IDLE_10MS) {
+                if (!ps2_command_ack(PS2_COMMAND_ENABLE)) {
+                    mouse_error_count += MAX_ERROR_COUNT + 1;
+                } else if (is_debug) {
+                    uart_putc('?');
+                    uart_putc('\r');
+                }
+
+                mouse_idle_reset();
+            }
         } else if (is_debug && ps2_bytes_available()) {
             byte = (uint8_t) ps2_get_byte();
             (void) fprintf_P(uart, PSTR("%02X "), (unsigned) byte);

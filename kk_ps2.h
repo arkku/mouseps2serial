@@ -145,6 +145,12 @@ extern uint8_t ps2_reply_timeout_ms;
 /// Incorrect stop bit
 #define PS2_ERROR_STOP_BIT          's'
 
+/// PS/2 was busy too long
+#define PS2_ERROR_BUSY              'B'
+
+/// PS/2 command did not succeed
+#define PS2_ERROR_COMMAND           'C'
+
 // MARK: - Functions
 
 /// Enable the PS/2 host. Reading will commence on the PS/2 CLK signal.

@@ -192,14 +192,19 @@ ps2_is_ok (void) {
 
 static bool
 ps2_write (const uint8_t data, const bool flush_input) {
-    unsigned attempts_remaining = 12000U;
+    unsigned attempts_remaining = 25000U;
     while (ps2_is_active() && attempts_remaining--) {
         _delay_us(4);
     }
 
     ps2_disable_interrupt();
 
-    if (!ps2_is_ok() || ps2_is_active()) {
+    if (!ps2_is_ok()) {
+        return false;
+    }
+
+    if (ps2_is_active()) {
+        ps2_error = PS2_ERROR_BUSY;
         return false;
     }
 
@@ -208,7 +213,9 @@ ps2_write (const uint8_t data, const bool flush_input) {
     // Pull down CLK to request write access
     ps2_clk_set_low();
 
-    _delay_us(128);
+    // The specified time is 100 µs, but let's err on the side of caution
+    // since some KVMs seem to introduce an additional delay
+    _delay_us(160);
 
     ps2_data_out(0);
 
@@ -320,7 +327,7 @@ ps2_command_ack (const uint8_t command) {
     if (ps2_command(command) == PS2_REPLY_ACK) {
         return true;
     } else {
-        ps2_error = 'C';
+        ps2_error = PS2_ERROR_COMMAND;
         return false;
     }
 }
@@ -339,7 +346,7 @@ ps2_command_arg_ack (const uint8_t command, const uint8_t arg) {
     if (ps2_command_arg(command, arg) == PS2_REPLY_ACK) {
         return true;
     } else {
-        ps2_error = 'C';
+        ps2_error = PS2_ERROR_COMMAND;
         return false;
     }
 }
@@ -457,6 +464,9 @@ ps2_enable (void) {
     while (ps2_is_active() && attempts_remaining--) {
         _delay_us(4);
     }
+
+    // Note: The timeout is to avoid interrupting an in-progress byte, but
+    // since we cannot recognize a broken state, we must proceed regardless
 
     ps2_disable_interrupt();
 

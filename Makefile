@@ -9,6 +9,7 @@
 
 MCU ?= atmega328p
 F_CPU ?= 16000000UL
+#F_CPU ?= 14745600UL
 
 # Bootloader rate only, the device itself is configured by DIP switches
 BAUD ?= 115200UL
@@ -63,7 +64,7 @@ BOOTLOADER=optiboot_atmega328.hex
 
 all: $(HEX)
 
-ps2serial.o: kk_uart.h kk_ps2.h flowctl.h led.h dip.h
+ps2serial.o: kk_uart.h kk_ps2.h flowctl.h led.h dip.h timer.h
 kk_uart.o: kk_uart.h
 kk_ps2.o: kk_ps2.h
 $(OBJS): Makefile
