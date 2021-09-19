@@ -99,11 +99,12 @@ lock:
 	$(AVRDUDE) -c $(BURNER) $(if $(PORT),-P $(PORT) ,)$(if $(BPS),-b $(BPS) ,)-p $(MCU) -U lock:w:0x0F:m -v
 
 .ccls: Makefile
-	@echo clang >$@
+	@echo $(CC) >$@
 	@echo --target=avr >>$@
-	@echo -nostdinc >>$@
-	@echo | $(CC) $(CFLAGS) -E -Wp,-v - 2>&1 | awk '/#include .* search starts here:/ { output=1; next } !output { next } /^End/ || /^#/ { output=0 } output && $$1 ~ /^\// { sub(/^[ ]*/, ""); print "-I" $$0 }' >>$@
 	@echo $(CFLAGS) | awk '{ for (i=1; i<=NF; i++) { print $$i } }' >>$@
+	@echo -nostdinc >>$@
+	@[ -d /usr/local/avr/include ] && echo -I/usr/local/avr/include >>$@
+	@echo | $(CC) $(CFLAGS) -E -Wp,-v - 2>&1 | awk '/#include .* search starts here:/ { output=1; next } !output { next } /^End/ || /^#/ { output=0 } output && $$1 ~ /^\// { sub(/^[ ]*/, ""); print "-I" $$0 }' >>$@
 	@cat $@
 
 clean:
